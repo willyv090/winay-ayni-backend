@@ -1,0 +1,66 @@
+# =========================
+# Entornos virtuales Python
+# =========================
+venv/
+.venv/
+env/
+ENV/
+
+# =========================
+# Variables de entorno
+# =========================
+.env
+.env.local
+.env.development
+.env.production
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# =========================
+# Caché y pruebas
+# =========================
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# =========================
+# Empaquetado Python
+# =========================
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# =========================
+# Logs
+# =========================
+*.log
+logs/
+
+# =========================
+# IDEs
+# =========================
+.idea/
+.vscode/
+
+# =========================
+# Sistema operativo
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================
+# Archivos temporales
+# =========================
+*.tmp
+*.temp
+*.bak
