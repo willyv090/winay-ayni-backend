@@ -6,8 +6,8 @@ class Persona(db.Model):
 
     id_per = db.Column(db.Integer, primary_key=True)
     nombre = db.Column(db.Text, nullable=False)
-    usuario = db.Column(db.Text, nullable=False)
-    contrasenia = db.Column(db.String(15), nullable=False)
+    usuario = db.Column(db.Text, nullable=False, unique=True)
+    contrasenia = db.Column(db.Text, nullable=False)
     estado = db.Column(db.Boolean, nullable=False)
 
     def to_dict(self):
