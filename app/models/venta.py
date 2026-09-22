@@ -9,12 +9,14 @@ class Venta(db.Model):
     total = db.Column(db.Numeric(10, 2), nullable=False)
 
     jornada_cajero_id_jor_caj = db.Column(
+        "jornadacajero_id_jor_caj",
         db.Integer,
         db.ForeignKey("jornadacajero.id_jor_caj"),
         nullable=False
     )
 
     metodos_pago_id_metodos = db.Column(
+        "metodospago_id_metodos",
         db.Integer,
         db.ForeignKey("metodospago.id_metodos"),
         nullable=False

@@ -19,6 +19,9 @@ def create_app():
     from app.routes.jornada_routes import jornada_bp
     from app.routes.jornada_cajero_routes import jornada_cajero_bp
     from app.routes.jornada_producto_routes import jornada_producto_bp
+    from app.routes.metodo_pago_routes import metodo_pago_bp
+    from app.routes.venta_routes import venta_bp
+    from app.routes.detalle_venta_routes import detalle_venta_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(persona_bp)
@@ -28,5 +31,8 @@ def create_app():
     app.register_blueprint(jornada_bp)
     app.register_blueprint(jornada_cajero_bp)
     app.register_blueprint(jornada_producto_bp)
+    app.register_blueprint(metodo_pago_bp)
+    app.register_blueprint(venta_bp)
+    app.register_blueprint(detalle_venta_bp)
 
     return app
