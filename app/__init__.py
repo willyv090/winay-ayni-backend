@@ -14,9 +14,13 @@ def create_app():
     from app.routes.auth_routes import auth_bp
     from app.routes.persona_routes import persona_bp
     from app.routes.rol_routes import rol_bp
+    from app.routes.empresa_routes import empresa_bp
+    from app.routes.producto_routes import producto_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(persona_bp)
     app.register_blueprint(rol_bp)
+    app.register_blueprint(empresa_bp)
+    app.register_blueprint(producto_bp)
 
     return app
