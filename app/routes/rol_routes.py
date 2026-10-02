@@ -1,4 +1,5 @@
 from flask import Blueprint, request, jsonify
+from flask_jwt_extended import jwt_required
 from app.services.rol_service import RolService
 
 
@@ -8,6 +9,13 @@ rol_bp = Blueprint(
     url_prefix="/api/roles"
 )
 
+@rol_bp.route("", methods=["GET"])
+@jwt_required()
+def listar_roles():
+
+    respuesta, codigo = RolService.listar_roles()
+
+    return jsonify(respuesta), codigo
 
 # CREAR
 @rol_bp.route("", methods=["POST"])

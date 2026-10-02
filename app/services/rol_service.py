@@ -5,6 +5,36 @@ from app.models.rol import Rol
 class RolService:
 
     @staticmethod
+    def listar_roles():
+        try:
+            roles = (
+                Rol.query
+                .filter_by(estado=True)
+                .order_by(Rol.id_rol.asc())
+                .all()
+            )
+
+            resultado = [
+                {
+                    "id": rol.id_rol,
+                    "nombre": rol.nombre,
+                    "estado": rol.estado
+                }
+                for rol in roles
+            ]
+
+            return {
+                "roles": resultado
+            }, 200
+
+        except Exception as error:
+            print(f"Error al listar roles: {error}")
+
+            return {
+                "error": "No se pudieron obtener los roles."
+            }, 500
+
+    @staticmethod
     def crear_rol(nombre, descripcion):
 
         if not nombre:

@@ -1,5 +1,6 @@
 from flask import Flask
 from config import Config
+from flask_cors import CORS
 from app.extensions import db, jwt
 
 
@@ -7,6 +8,18 @@ def create_app():
     app = Flask(__name__)
 
     app.config.from_object(Config)
+
+    CORS(
+        app,
+        resources={
+            r"/api/*": {
+                "origins": [
+                    "http://localhost:5173",
+                    "http://127.0.0.1:5173"
+                ]
+            }
+        }
+    )
 
     db.init_app(app)
     jwt.init_app(app)
