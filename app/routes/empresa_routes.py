@@ -1,4 +1,6 @@
 from flask import Blueprint, request, jsonify
+from flask_jwt_extended import jwt_required
+
 from app.services.empresa_service import EmpresaService
 
 
@@ -38,6 +40,16 @@ def listar_empresas():
 
     return jsonify(respuesta), codigo
 
+# LISTAR POR ID
+@empresa_bp.route("/<int:id_empresa>", methods=["GET"])
+@jwt_required()
+def obtener_empresa(id_empresa):
+
+    respuesta, codigo = EmpresaService.obtener_empresa(
+        id_empresa
+    )
+
+    return jsonify(respuesta), codigo
 
 # EDITAR
 @empresa_bp.route("/<int:id_empresa>", methods=["PUT"])

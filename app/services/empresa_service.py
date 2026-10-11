@@ -146,6 +146,67 @@ class EmpresaService:
             "empresas": resultado
         }, 200
 
+
+    # ==========================
+    # Listar empresas activas por id de persona
+    # ==========================
+
+    @staticmethod
+    def obtener_empresa(id_empresa):
+        try:
+            empresa = db.session.get(Empresa, id_empresa)
+
+            if not empresa:
+                return {
+                    "error": "Emprendimiento no encontrado."
+                }, 404
+
+            # Personas asociadas actualmente
+            personas_query = (
+                Persona.query
+                .join(
+                    PersonaEmpresa,
+                    Persona.id_per == PersonaEmpresa.persona_id_per
+                )
+                .filter(
+                    PersonaEmpresa.empresa_id_empresa == empresa.id_empresa,
+                    PersonaEmpresa.estado == True,
+                    Persona.estado == True
+                )
+                .all()
+            )
+
+            personas = [
+                {
+                    "id": persona.id_per,
+                    "nombre": persona.nombre,
+                    "usuario": persona.usuario,
+                    "estado": persona.estado
+                }
+                for persona in personas_query
+            ]
+
+            return {
+                "empresa": {
+                    "id": empresa.id_empresa,
+                    "nombre": empresa.nombre,
+                    "direccion": empresa.direccion,
+                    "telefono": empresa.telefono,
+                    "estado": empresa.estado,
+                    "personas": personas
+                }
+            }, 200
+
+        except Exception as error:
+
+            print(
+                f"Error al obtener emprendimiento: {error}"
+            )
+
+            return {
+                "error": "No se pudo obtener el emprendimiento."
+            }, 500
+
     # ==========================
     # EDITAR
     # ==========================
