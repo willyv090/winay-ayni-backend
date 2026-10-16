@@ -1,3 +1,5 @@
+from app.models.rol import Rol
+from app.models.rol_persona import RolPersona
 from app.extensions import db
 from app.models.empresa import Empresa
 from app.models.persona import Persona
@@ -426,3 +428,58 @@ class EmpresaService:
                 "error": "No se pudo reactivar la empresa.",
                 "detalle": str(e)
             }, 500
+    @staticmethod
+    def emprendedor_autorizado(id_persona):
+        try:
+            id_persona = int(id_persona)
+        except (TypeError, ValueError):
+            return False
+        return Persona.query.join(
+            RolPersona, RolPersona.persona_id_per == Persona.id_per
+        ).join(Rol, Rol.id_rol == RolPersona.rol_id_rol).filter(
+            Persona.id_per == id_persona,
+            Persona.estado.is_(True),
+            RolPersona.estado.is_(True),
+            Rol.estado.is_(True),
+            Rol.nombre == "EMPRENDEDOR"
+        ).first() is not None
+
+    @staticmethod
+    def consulta_propias(id_persona):
+        # EXISTS evita duplicados si hubiera más de una relación histórica.
+        vinculo = PersonaEmpresa.query.filter(
+            PersonaEmpresa.empresa_id_empresa == Empresa.id_empresa,
+            PersonaEmpresa.persona_id_per == int(id_persona),
+            PersonaEmpresa.estado.is_(True)
+        ).exists()
+        return Empresa.query.filter(vinculo)
+
+    @staticmethod
+    def serializar_propia(empresa):
+        return {
+            "id": empresa.id_empresa,
+            "nombre": empresa.nombre,
+            "direccion": empresa.direccion,
+            "telefono": empresa.telefono,
+            "estado": empresa.estado
+        }
+
+    @staticmethod
+    def listar_mias(id_persona):
+        if not EmpresaService.emprendedor_autorizado(id_persona):
+            return {"error": "Se requiere un usuario activo con rol emprendedor."}, 403
+        empresas = EmpresaService.consulta_propias(id_persona).order_by(
+            Empresa.nombre, Empresa.id_empresa
+        ).all()
+        return {"empresas": [EmpresaService.serializar_propia(e) for e in empresas]}, 200
+
+    @staticmethod
+    def obtener_mia(id_persona, id_empresa):
+        if not EmpresaService.emprendedor_autorizado(id_persona):
+            return {"error": "Se requiere un usuario activo con rol emprendedor."}, 403
+        empresa = EmpresaService.consulta_propias(id_persona).filter(
+            Empresa.id_empresa == id_empresa
+        ).first()
+        if empresa is None:
+            return {"error": "La empresa no existe o no está vinculada a su cuenta."}, 404
+        return {"empresa": EmpresaService.serializar_propia(empresa)}, 200

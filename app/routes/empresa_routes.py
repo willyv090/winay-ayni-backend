@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required
+from flask_jwt_extended import jwt_required, get_jwt_identity
 
 from app.services.empresa_service import EmpresaService
 
@@ -95,4 +95,19 @@ def reactivar_empresa(id_empresa):
         id_empresa
     )
 
+    return jsonify(respuesta), codigo
+
+
+# Consultas del emprendedor: identidad del JWT y vínculo activo.
+@empresa_bp.route("/mias", methods=["GET"])
+@jwt_required()
+def listar_mis_empresas():
+    respuesta, codigo = EmpresaService.listar_mias(get_jwt_identity())
+    return jsonify(respuesta), codigo
+
+
+@empresa_bp.route("/mias/<int:id_empresa>", methods=["GET"])
+@jwt_required()
+def obtener_mi_empresa(id_empresa):
+    respuesta, codigo = EmpresaService.obtener_mia(get_jwt_identity(), id_empresa)
     return jsonify(respuesta), codigo

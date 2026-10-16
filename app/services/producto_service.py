@@ -4,9 +4,60 @@ from decimal import Decimal, InvalidOperation
 from app.extensions import db
 from app.models.producto import Producto
 from app.models.empresa import Empresa
+from app.models.persona import Persona
+from app.models.rol import Rol
+from app.models.rol_persona import RolPersona
+from app.services.empresa_service import EmpresaService
 
 
 class ProductoService:
+    @staticmethod
+    def autorizar(id_persona, escritura=False, propio=False, id_empresa=None, id_producto=None):
+        try:
+            id_persona = int(id_persona)
+        except (ValueError, TypeError):
+            return {"error": "Usuario inválido."}, 403, True
+        persona = db.session.get(Persona, id_persona)
+        if not persona or not persona.estado:
+            return {"error": "El usuario no está activo."}, 403, True
+        roles = {r.nombre for r in Rol.query.join(
+            RolPersona, RolPersona.rol_id_rol == Rol.id_rol
+        ).filter(RolPersona.persona_id_per == id_persona,
+                 RolPersona.estado.is_(True), Rol.estado.is_(True)).all()}
+        restringido = escritura or propio or "ADMINISTRADOR" not in roles
+        if restringido and "EMPRENDEDOR" not in roles:
+            return {"error": "Se requiere el rol emprendedor."}, 403, True
+        if id_producto is not None:
+            producto = db.session.get(Producto, id_producto)
+            if not producto:
+                return {"error": "Producto no disponible."}, 404, restringido
+            # Validar también la empresa destino en edición.
+            origen = producto.empresa_id_empresa
+            if restringido and EmpresaService.consulta_propias(id_persona).filter(
+                Empresa.id_empresa == origen
+            ).first() is None:
+                return {"error": "Producto no disponible."}, 404, True
+            if escritura and not producto.empresa.estado:
+                return {"error": "La empresa se encuentra inactiva."}, 400, restringido
+            if id_empresa is None:
+                id_empresa = origen
+        if id_empresa is not None:
+            try:
+                if isinstance(id_empresa, bool) or str(int(id_empresa)) != str(id_empresa):
+                    raise ValueError()
+                id_empresa = int(id_empresa)
+            except (TypeError, ValueError):
+                return {"error": "Seleccione una empresa válida."}, 400, restringido
+            query = EmpresaService.consulta_propias(id_persona) if restringido else Empresa.query
+            empresa = query.filter(Empresa.id_empresa == id_empresa).first()
+            if empresa is None:
+                return {"error": "Empresa no disponible."}, 404, restringido
+            if escritura and not empresa.estado:
+                return {"error": "La empresa se encuentra inactiva."}, 400, restringido
+        elif escritura and id_producto is None:
+            return {"error": "Seleccione una empresa."}, 400, restringido
+        return None, 200, restringido
+
 
     # ==========================================
     # MÉTODOS AUXILIARES
@@ -15,7 +66,10 @@ class ProductoService:
     @staticmethod
     def _convertir_decimal(valor, nombre_campo):
         try:
-            return Decimal(str(valor))
+            numero = Decimal(str(valor))
+            if not numero.is_finite():
+                raise InvalidOperation()
+            return numero
         except (InvalidOperation, TypeError, ValueError):
             raise ValueError(
                 f"El campo {nombre_campo} debe ser un número válido."
@@ -96,7 +150,7 @@ class ProductoService:
         id_empresa
     ):
 
-        if not nombre:
+        if not isinstance(nombre, str) or not nombre.strip():
             return {
                 "error": "El nombre del producto es obligatorio."
             }, 400
@@ -107,8 +161,10 @@ class ProductoService:
             }, 400
 
         try:
+            if isinstance(cantidad, bool) or Decimal(str(cantidad)) != int(cantidad):
+                raise ValueError()
             cantidad = int(cantidad)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, InvalidOperation, OverflowError):
             return {
                 "error": "La cantidad debe ser un número entero."
             }, 400
@@ -149,6 +205,11 @@ class ProductoService:
             return {
                 "error": str(e)
             }, 400
+
+        if fecha_salida and fecha_salida < fecha_ingreso:
+            return {"error": "La fecha de salida no puede ser anterior al ingreso."}, 400
+        if notas is not None and not isinstance(notas, str):
+            return {"error": "Las notas deben ser texto."}, 400
 
         if precio_u <= 0:
             return {
@@ -218,11 +279,14 @@ class ProductoService:
     # ==========================================
 
     @staticmethod
-    def listar_productos():
+    def listar_productos(id_persona=None):
 
-        productos = Producto.query.order_by(
-            Producto.id_prod
-        ).all()
+        query = Producto.query
+        if id_persona is not None:
+            query = query.filter(Producto.empresa_id_empresa.in_(
+                EmpresaService.consulta_propias(id_persona).with_entities(Empresa.id_empresa)
+            ))
+        productos = query.order_by(Producto.id_prod).all()
 
         resultado = [
             ProductoService._producto_json(producto)
@@ -238,22 +302,15 @@ class ProductoService:
     #==========================================
 
     @staticmethod
-    def listar_productos_empresa(id_empresa, buscar=None):
-
-        empresa = Empresa.query.filter_by(
-            id_empresa=id_empresa,
-            estado=True
-        ).first()
-
+    def listar_productos_empresa(id_empresa, buscar=None, estado='activos'):
+        empresa = db.session.get(Empresa, id_empresa)
         if not empresa:
-            return {
-                "error": "La empresa no existe o se encuentra inactiva."
-            }, 404
-
-        query = Producto.query.filter_by(
-            empresa_id_empresa=id_empresa,
-            estado=True
-        )
+            return {"error": "La empresa no existe."}, 404
+        if estado not in ("activos", "archivados", "todos"):
+            return {"error": "Estado de productos inválido."}, 400
+        query = Producto.query.filter_by(empresa_id_empresa=id_empresa)
+        if estado != "todos":
+            query = query.filter(Producto.estado == (estado == "activos"))
 
         if buscar:
             buscar = buscar.strip()
@@ -325,7 +382,7 @@ class ProductoService:
                 "error": "No se puede modificar un producto inactivo."
             }, 400
 
-        if not nombre:
+        if not isinstance(nombre, str) or not nombre.strip():
             return {
                 "error": "El nombre del producto es obligatorio."
             }, 400
@@ -362,6 +419,11 @@ class ProductoService:
             return {
                 "error": str(e)
             }, 400
+
+        if fecha_salida and fecha_salida < fecha_ingreso:
+            return {"error": "La fecha de salida no puede ser anterior al ingreso."}, 400
+        if notas is not None and not isinstance(notas, str):
+            return {"error": "Las notas deben ser texto."}, 400
 
         if precio_u <= 0:
             return {
