@@ -59,3 +59,10 @@ def quitar_cajero(id_jornada, id_persona):
     )
 
     return jsonify(respuesta), codigo
+
+@jornada_cajero_bp.route("/cajero/mias", methods=["GET"])
+def mis_jornadas():
+    from flask_jwt_extended import verify_jwt_in_request, get_jwt_identity
+    verify_jwt_in_request()
+    respuesta, codigo = JornadaCajeroService.mis_jornadas(get_jwt_identity())
+    return jsonify(respuesta), codigo

@@ -227,3 +227,26 @@ class JornadaProductoService:
                 "error": "No se pudo retirar el producto.",
                 "detalle": str(e)
             }, 500
+
+    @staticmethod
+    def catalogo_caja(id_jornada, usuario_id):
+        from app.services.venta_service import VentaService, VentaError
+        from app.models.jornada_cajero import JornadaCajero
+        from app.services.producto_service import ProductoService
+        def operacion():
+            contexto = VentaService.contexto(usuario_id, "CAJERO")
+            asignacion = JornadaCajero.query.filter_by(
+                jornada_id_jornada=id_jornada, persona_id_per=contexto["persona"], estado=True
+            ).first()
+            if not asignacion or not asignacion.jornada.estado:
+                raise VentaError("No tiene una asignación activa en esta jornada.", 403)
+            productos = []
+            for relacion in JornadaProducto.query.filter_by(jornada_id_jornada=id_jornada, estado=True).all():
+                p = relacion.producto
+                if p.estado and p.empresa.estado:
+                    dato = ProductoService._producto_json(p)
+                    dato["id_jornada_producto"] = relacion.id_jor_prod
+                    productos.append(dato)
+            productos.sort(key=lambda p: (p["empresa"]["nombre"], p["nombre"], p["id"]))
+            return {"productos": productos}, 200
+        return VentaService.ejecutar(operacion)

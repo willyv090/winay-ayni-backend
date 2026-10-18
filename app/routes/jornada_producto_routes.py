@@ -60,3 +60,10 @@ def quitar_producto(id_jornada, id_producto):
     )
 
     return jsonify(respuesta), codigo
+
+@jornada_producto_bp.route("/<int:id_jornada>/productos/caja", methods=["GET"])
+def catalogo_caja(id_jornada):
+    from flask_jwt_extended import verify_jwt_in_request, get_jwt_identity
+    verify_jwt_in_request()
+    respuesta, codigo = JornadaProductoService.catalogo_caja(id_jornada, get_jwt_identity())
+    return jsonify(respuesta), codigo

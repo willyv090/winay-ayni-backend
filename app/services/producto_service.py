@@ -3,6 +3,7 @@ from decimal import Decimal, InvalidOperation
 
 from app.extensions import db
 from app.models.producto import Producto
+from app.models.detalle_venta import DetalleVenta
 from app.models.empresa import Empresa
 from app.models.persona import Persona
 from app.models.rol import Rol
@@ -343,7 +344,7 @@ class ProductoService:
     @staticmethod
     def obtener_producto(id_producto):
 
-        producto = Producto.query.get(id_producto)
+        producto = Producto.query.filter_by(id_prod=id_producto).with_for_update().populate_existing().first()
 
         if not producto:
             return {
@@ -370,7 +371,7 @@ class ProductoService:
         id_empresa
     ):
 
-        producto = Producto.query.get(id_producto)
+        producto = Producto.query.filter_by(id_prod=id_producto).with_for_update().populate_existing().first()
 
         if not producto:
             return {
@@ -458,6 +459,11 @@ class ProductoService:
             producto.fecha_ingreso = fecha_ingreso
             producto.fecha_salida = fecha_salida
             producto.notas = notas.strip() if notas else None
+            if producto.empresa_id_empresa != int(id_empresa) and DetalleVenta.query.filter_by(
+                producto_id_prod=id_producto
+            ).first():
+                db.session.rollback()
+                return {"error": "No se puede cambiar de empresa un producto con ventas registradas."}, 400
             producto.empresa_id_empresa = id_empresa
 
             db.session.commit()
@@ -485,7 +491,7 @@ class ProductoService:
     @staticmethod
     def eliminar_producto(id_producto):
 
-        producto = Producto.query.get(id_producto)
+        producto = Producto.query.filter_by(id_prod=id_producto).with_for_update().populate_existing().first()
 
         if not producto:
             return {
@@ -523,7 +529,7 @@ class ProductoService:
     @staticmethod
     def reactivar_producto(id_producto):
 
-        producto = Producto.query.get(id_producto)
+        producto = Producto.query.filter_by(id_prod=id_producto).with_for_update().populate_existing().first()
 
         if not producto:
             return {
@@ -574,7 +580,7 @@ class ProductoService:
     @staticmethod
     def ajustar_stock(id_producto, ajuste, notas=None):
 
-        producto = Producto.query.get(id_producto)
+        producto = Producto.query.filter_by(id_prod=id_producto).with_for_update().populate_existing().first()
 
         if not producto:
             return {
@@ -592,6 +598,8 @@ class ProductoService:
             }, 400
 
         try:
+            if isinstance(ajuste, bool) or not isinstance(ajuste, (int, str)):
+                raise ValueError()
             ajuste = int(ajuste)
         except (TypeError, ValueError):
             return {
@@ -604,6 +612,10 @@ class ProductoService:
             }, 400
 
         nueva_cantidad = producto.cantidad + ajuste
+        if nueva_cantidad > 9007199254740991:
+            return {"error": "El stock supera el máximo permitido."}, 400
+        if notas is not None and not isinstance(notas, str):
+            return {"error": "Las notas deben ser texto."}, 400
 
         if nueva_cantidad < 0:
             return {

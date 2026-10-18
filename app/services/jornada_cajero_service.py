@@ -193,3 +193,21 @@ class JornadaCajeroService:
                 "error": "No se pudo retirar el cajero.",
                 "detalle": str(e)
             }, 500
+
+    @staticmethod
+    def mis_jornadas(usuario_id):
+        from app.services.venta_service import VentaService
+        def operacion():
+            contexto = VentaService.contexto(usuario_id, "CAJERO")
+            asignaciones = JornadaCajero.query.join(Jornada).filter(
+                JornadaCajero.persona_id_per == contexto["persona"],
+                JornadaCajero.estado.is_(True), Jornada.estado.is_(True)
+            ).order_by(Jornada.fecha_inicio.desc(), JornadaCajero.id_jor_caj).all()
+            return {"jornadas": [{
+                "id_jornada_cajero": a.id_jor_caj,
+                "id": a.jornada.id_jornada, "nombre": a.jornada.nombre,
+                "direccion": a.jornada.direccion,
+                "fecha_inicio": a.jornada.fecha_inicio.isoformat(),
+                "fecha_fin": a.jornada.fecha_fin.isoformat()
+            } for a in asignaciones]}, 200
+        return VentaService.ejecutar(operacion)
