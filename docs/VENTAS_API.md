@@ -136,3 +136,37 @@ detalles sí actualizan estos resultados. Las ventas sin detalles no se cuentan.
 - Caja registra un pago recibido externamente; no integra una pasarela bancaria.
   El cálculo opcional de recibido/cambio es local y no persiste.
   Se mantiene el contrato anterior de ventas; no se requieren cambios de esquema.
+
+## Métricas de administrador
+GET /api/ventas/metricas/admin requiere JWT y rol ADMINISTRADOR activo.
+Filtros opcionales: id_jornada, desde, hasta (YYYY-MM-DD, límites inclusivos).
+Devuelve resumen (ventas distintas con detalles, unidades y total), top 10 empresas
+por importe, top 10 productos por unidades, días con ventas y comparación de todas
+las ferias. La comparación comparte las fechas, pero no el filtro id_jornada.
+Solo incluye ventas JORNADA. Usa subtotales históricos, incluye productos archivados
+y ferias finalizadas. Las ferias sin ventas aparecen con cero.
+Una venta multiempresa cuenta una vez en resumen y una vez para cada empresa involucrada.
+No requiere cambios de esquema.
+
+## Ajuste de alcance sin cambios de base de datos (20/10/2026)
+
+- No se incorporan historiales de cambio de cajero ni de movimientos de stock.
+- Cada detalle admite aplicar_descuento booleano: false guarda rebaja_aplicada=0;
+  true aplica el importe configurado por el emprendedor. La interfaz inicia sin descuento
+  y envía siempre la elección. Por compatibilidad con clientes anteriores, omitir
+  aplicar_descuento conserva el comportamiento anterior (aplicar la rebaja configurada).
+  No se acepta un importe arbitrario enviado por el cliente. Ambos formularios envían total_esperado.
+- GET /api/jornadas/ID/reporte, exclusivo ADMINISTRADOR, devuelve todas las empresas
+  vinculadas a productos de la feria (incluidas asignaciones retiradas y ventas previas),
+  ventas, unidades, importes por empresa y método de pago, productos y stock actual.
+  No es una captura histórica de inventario al cierre.
+- PUT /api/jornadas/ID/cerrar valida detalles, sumas por venta y total por empresas.
+  Si hay inconsistencias devuelve 409 y conserva la jornada abierta.
+  Si cuadra, guarda estado=false. DELETE /api/jornadas/ID utiliza la misma validación.
+  El cierre y las escrituras de venta coordinan un bloqueo de la fila Jornada.
+  Una feria sin ventas puede archivarse; una venta sin detalles impide cerrar.
+- Reactivar permanece como excepción administrativa por error humano.
+- Se utiliza la clave primaria como código único; se permite buscarla sin mostrar
+  identificadores en las tarjetas de producto. Los nombres no se consideran únicos.
+- Se conservan los importes históricos de ventas. Los reportes se calculan sobre las
+  tablas existentes; no se crea snapshot ni tabla de cierre.

@@ -92,6 +92,14 @@ class VentaService:
         return venta
 
     @staticmethod
+    def bloquear_jornada(id_jornada):
+        from app.models.jornada import Jornada
+        jornada = Jornada.query.filter_by(id_jornada=id_jornada).with_for_update().populate_existing().first()
+        if not jornada or not jornada.estado:
+            raise VentaError("La jornada está finalizada.")
+        return jornada
+
+    @staticmethod
     def validar_escritura(venta, id_persona):
         rol = "CAJERO" if venta.tipo == "JORNADA" else "EMPRENDEDOR"
         contexto = VentaService.contexto(id_persona, rol)
@@ -101,8 +109,7 @@ class VentaService:
             jc = venta.jornada_cajero
             if not jc or jc.persona_id_per != contexto["persona"] or not jc.estado:
                 raise VentaError("La asignación del cajero ya no está activa.", 403)
-            if not jc.jornada.estado:
-                raise VentaError("La jornada está finalizada.")
+            VentaService.bloquear_jornada(jc.jornada_id_jornada)
         else:
             for detalle in DetalleVenta.query.filter_by(venta_id_venta=venta.id_venta).all():
                 p = detalle.producto
@@ -140,8 +147,7 @@ class VentaService:
                 jc = db.session.get(JornadaCajero, jid)
                 if not jc or jc.persona_id_per != contexto["persona"] or not jc.estado:
                     raise VentaError("No tiene una asignación activa como cajero para esta venta.", 403)
-                if not jc.jornada.estado:
-                    raise VentaError("La jornada está finalizada.")
+                VentaService.bloquear_jornada(jc.jornada_id_jornada)
             elif id_jornada_cajero is not None:
                 raise VentaError("Una venta independiente no lleva asignación de cajero.")
             if tipo == "INDEPENDIENTE" and not detalles:
@@ -283,5 +289,70 @@ class VentaService:
                 "ranking": [{"posicion": i, "producto": {"id": r.id_prod, "nombre": r.nombre, "estado": r.estado},
                              "unidades_vendidas": int(r.unidades), "total_vendido": float(r.importe)}
                             for i, r in enumerate(ranking, 1)]
+            }, 200
+        return VentaService.ejecutar(operacion)
+
+
+    @staticmethod
+    def metricas_admin(usuario_id, id_jornada=None, desde=None, hasta=None):
+        def operacion():
+            from datetime import date, time, timedelta
+            from app.models.jornada import Jornada
+            from app.models.empresa import Empresa
+            VentaService.contexto(usuario_id, "ADMINISTRADOR")
+            limites = {}
+            for nombre, valor in (("desde", desde), ("hasta", hasta)):
+                if valor:
+                    try:
+                        fecha = date.fromisoformat(valor)
+                        if fecha.isoformat() != valor:
+                            raise ValueError()
+                        limites[nombre] = fecha
+                    except (ValueError, TypeError):
+                        raise VentaError("Las fechas deben tener formato YYYY-MM-DD.")
+            if limites.get("desde", date.min) > limites.get("hasta", date.max):
+                raise VentaError("La fecha inicial no puede ser posterior a la final.")
+            jid = VentaService.entero(id_jornada, "Jornada") if id_jornada else None
+            ferias = Jornada.query.order_by(Jornada.fecha_inicio.desc(), Jornada.id_jornada.desc()).all()
+            if jid and not any(j.id_jornada == jid for j in ferias):
+                raise VentaError("Jornada no disponible.", 404)
+            query = db.session.query(DetalleVenta).join(Venta, Venta.id_venta == DetalleVenta.venta_id_venta).join(
+                JornadaCajero, JornadaCajero.id_jor_caj == Venta.jornada_cajero_id_jor_caj
+            ).join(Producto, Producto.id_prod == DetalleVenta.producto_id_prod).join(
+                Empresa, Empresa.id_empresa == Producto.empresa_id_empresa
+            ).filter(Venta.tipo == "JORNADA")
+            if "desde" in limites:
+                query = query.filter(Venta.fecha >= datetime.combine(limites["desde"], time.min))
+            if "hasta" in limites:
+                fin = limites["hasta"]
+                query = query.filter(Venta.fecha <= datetime.combine(fin, time.max)) if fin == date.max else query.filter(
+                    Venta.fecha < datetime.combine(fin + timedelta(days=1), time.min))
+            cantidad = db.func.count(db.distinct(Venta.id_venta))
+            unidades = db.func.coalesce(db.func.sum(DetalleVenta.cantidad), 0)
+            importe = db.func.coalesce(db.func.sum(DetalleVenta.subtotal), 0)
+            comparacion = {r[0]: r for r in query.with_entities(
+                JornadaCajero.jornada_id_jornada, cantidad, unidades, importe
+            ).group_by(JornadaCajero.jornada_id_jornada).all()}
+            if jid:
+                query = query.filter(JornadaCajero.jornada_id_jornada == jid)
+            resumen = query.with_entities(cantidad, unidades, importe).one()
+            ranking_empresas = query.with_entities(Empresa.id_empresa, Empresa.nombre, cantidad, unidades, importe).group_by(
+                Empresa.id_empresa, Empresa.nombre).order_by(importe.desc(), Empresa.id_empresa).limit(10).all()
+            ranking_productos = query.with_entities(Producto.id_prod, Producto.nombre, Empresa.nombre, unidades, importe).group_by(
+                Producto.id_prod, Producto.nombre, Empresa.nombre).order_by(unidades.desc(), importe.desc(), Producto.id_prod).limit(10).all()
+            dia = db.func.date(Venta.fecha)
+            evolucion = query.with_entities(dia, cantidad, unidades, importe).group_by(dia).order_by(dia).all()
+            return {
+                "periodo": {"desde": desde or None, "hasta": hasta or None},
+                "id_jornada": jid,
+                "resumen": {"ventas": int(resumen[0]), "unidades": int(resumen[1]), "total": float(resumen[2])},
+                "ferias": [{"id": j.id_jornada, "nombre": j.nombre, "estado": j.estado,
+                    "ventas": int(comparacion[j.id_jornada][1]) if j.id_jornada in comparacion else 0,
+                    "unidades": int(comparacion[j.id_jornada][2]) if j.id_jornada in comparacion else 0,
+                    "total": float(comparacion[j.id_jornada][3]) if j.id_jornada in comparacion else 0
+                } for j in ferias],
+                "empresas": [{"id": r[0], "nombre": r[1], "ventas": int(r[2]), "unidades": int(r[3]), "total": float(r[4])} for r in ranking_empresas],
+                "productos": [{"id": r[0], "nombre": r[1], "empresa": r[2], "unidades": int(r[3]), "total": float(r[4])} for r in ranking_productos],
+                "dias": [{"fecha": str(r[0]), "ventas": int(r[1]), "unidades": int(r[2]), "total": float(r[3])} for r in evolucion]
             }, 200
         return VentaService.ejecutar(operacion)

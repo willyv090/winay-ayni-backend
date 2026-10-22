@@ -1,4 +1,5 @@
 from flask import Blueprint, request, jsonify
+from flask_jwt_extended import jwt_required, get_jwt_identity
 
 from app.services.jornada_service import JornadaService
 
@@ -134,10 +135,11 @@ def editar_jornada(id_jornada):
     "/<int:id_jornada>/cerrar",
     methods=["PUT"]
 )
+@jwt_required()
 def cerrar_jornada(id_jornada):
 
     respuesta, codigo = JornadaService.cerrar_jornada(
-        id_jornada
+        id_jornada, get_jwt_identity()
     )
 
     return jsonify(respuesta), codigo
@@ -151,10 +153,11 @@ def cerrar_jornada(id_jornada):
     "/<int:id_jornada>",
     methods=["DELETE"]
 )
+@jwt_required()
 def eliminar_jornada(id_jornada):
 
-    respuesta, codigo = JornadaService.eliminar_jornada(
-        id_jornada
+    respuesta, codigo = JornadaService.cerrar_jornada(
+        id_jornada, get_jwt_identity()
     )
 
     return jsonify(respuesta), codigo
@@ -168,10 +171,23 @@ def eliminar_jornada(id_jornada):
     "/<int:id_jornada>/reactivar",
     methods=["PUT"]
 )
+@jwt_required()
 def reactivar_jornada(id_jornada):
+    from app.services.venta_service import VentaService, VentaError
+    try:
+        VentaService.contexto(get_jwt_identity(), "ADMINISTRADOR")
+    except VentaError as error:
+        return jsonify({"error": error.mensaje}), error.codigo
+
 
     respuesta, codigo = JornadaService.reactivar_jornada(
         id_jornada
     )
 
+    return jsonify(respuesta), codigo
+
+@jornada_bp.route("/<int:id_jornada>/reporte", methods=["GET"])
+@jwt_required()
+def reporte_jornada(id_jornada):
+    respuesta, codigo = JornadaService.reporte_jornada(id_jornada, get_jwt_identity())
     return jsonify(respuesta), codigo

@@ -64,3 +64,13 @@ def metricas_ferias():
         hasta=request.args.get("hasta"), tipo="JORNADA"
     )
     return jsonify(respuesta), codigo
+
+
+@venta_bp.route("/metricas/admin", methods=["GET"])
+@jwt_required()
+def metricas_admin():
+    respuesta, codigo = VentaService.metricas_admin(
+        usuario_id=get_jwt_identity(), id_jornada=request.args.get("id_jornada"),
+        desde=request.args.get("desde"), hasta=request.args.get("hasta")
+    )
+    return jsonify(respuesta), codigo

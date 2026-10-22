@@ -76,10 +76,13 @@ class DetalleVentaService:
             if pid in recibidos:
                 raise VentaError("No repita un producto en la misma solicitud.")
             recibidos.add(pid)
-            preparados.append((pid, cantidad, jp))
+            aplicar = item.get("aplicar_descuento", True)
+            if not isinstance(aplicar, bool):
+                raise VentaError("aplicar_descuento debe ser verdadero o falso.")
+            preparados.append((pid, cantidad, jp, aplicar))
         nuevos = []
         # Orden estable de bloqueo para ventas concurrentes con varios productos.
-        for pid, cantidad, jp in sorted(preparados, key=lambda x: x[0]):
+        for pid, cantidad, jp, aplicar in sorted(preparados, key=lambda x: x[0]):
             producto = Producto.query.filter_by(id_prod=pid).with_for_update().populate_existing().first()
             if not producto:
                 raise VentaError("Producto no disponible.", 404)
@@ -94,6 +97,7 @@ class DetalleVentaService:
             precio, rebaja = Decimal(producto.precio_u), Decimal(producto.rebaja or 0)
             if precio <= 0 or rebaja < 0 or rebaja > precio:
                 raise VentaError("El producto tiene un precio o rebaja inválidos.")
+            rebaja = rebaja if aplicar else Decimal('0')
             detalle = DetalleVenta(cantidad=cantidad, precio_u=precio, rebaja_aplicada=rebaja,
                 subtotal=(precio-rebaja)*cantidad, venta_id_venta=venta.id_venta,
                 producto_id_prod=pid, jornada_producto_id_jor_prod=jp.id_jor_prod if jp else None)

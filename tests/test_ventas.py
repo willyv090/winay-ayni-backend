@@ -402,5 +402,121 @@ class VentasTest(unittest.TestCase):
         self.assertEqual(self.req("get","?rol=CAJERO",user=0).json["ventas"],[])
 
 
+
+    def test_metricas_admin_totales_historicos_y_filtros(self):
+        self.independiente()
+        result=self.grupal()
+        self.assertEqual(result.status_code,201)
+        url="/metricas/admin"
+        r=self.req("get",url)
+        self.assertEqual(r.status_code,200,r.json)
+        self.assertEqual(r.json["resumen"],{"ventas":1,"unidades":2,"total":36.0})
+        self.assertEqual(len(r.json["empresas"]),2)
+        self.assertEqual(len(r.json["productos"]),2)
+        self.assertEqual(r.json["dias"][0]["ventas"],1)
+        self.assertEqual(r.json["dias"][0]["total"],36)
+        self.assertEqual(r.json["ferias"][0]["total"],36)
+        otra=Jornada(nombre="Sin ventas",direccion="Otro",estado=True,
+            fecha_inicio=date.today(),fecha_fin=date.today())
+        db.session.add(otra)
+        self.productos[0].precio_u=100
+        self.productos[0].estado=False
+        self.jornada.estado=False
+        db.session.commit()
+        r=self.req("get",url+f"?id_jornada={self.jornada.id_jornada}")
+        self.assertEqual(r.json["resumen"]["total"],36)
+        self.assertEqual(len(r.json["ferias"]),2)
+        empty=self.req("get",url+f"?id_jornada={otra.id_jornada}").json
+        self.assertEqual(empty["resumen"]["ventas"],0)
+        self.assertEqual(empty["productos"],[])
+        self.assertEqual(empty["dias"],[])
+        self.assertEqual(self.req("get",url+"?hasta=2000-01-01").json["resumen"]["total"],0)
+        hoy=date.today().isoformat()
+        self.assertEqual(self.req("get",url+f"?desde={hoy}&hasta={hoy}").json["resumen"]["total"],36)
+
+    def test_metricas_admin_autorizacion_y_validacion(self):
+        url="/metricas/admin"
+        self.assertEqual(self.client.get("/api/ventas"+url).status_code,401)
+        for user in (1,2,3):
+            self.assertEqual(self.req("get",url,user=user).status_code,403)
+        for filtro in ("?id_jornada=abc","?desde=mal","?hasta=2026-02-30",
+                       "?desde=2026-10-17&hasta=2026-10-16"):
+            self.assertEqual(self.req("get",url+filtro).status_code,400)
+        self.assertEqual(self.req("get",url+"?id_jornada=99999").status_code,404)
+        r=self.req("get",url).json
+        self.assertEqual(r["resumen"],{"ventas":0,"unidades":0,"total":0.0})
+        self.assertEqual(r["empresas"],[])
+        self.assertEqual(r["ferias"][0]["ventas"],0)
+
+
+
+    def test_descuento_elegido_y_precio_historico(self):
+        p=self.productos[0]
+        normal=self.independiente([{"id_producto":p.id_prod,"cantidad":1,"aplicar_descuento":False}])
+        self.assertEqual(normal.status_code,201,normal.json)
+        self.assertEqual(normal.json["venta"]["total"],20)
+        rebajada=self.independiente([{"id_producto":p.id_prod,"cantidad":1,"aplicar_descuento":True}])
+        self.assertEqual(rebajada.json["venta"]["total"],18)
+        did=DetalleVenta.query.filter_by(venta_id_venta=normal.json["venta"]["id"]).first().id_detalle
+        p.precio_u=50
+        p.rebaja=10
+        db.session.commit()
+        result=self.req("put",f"/{normal.json['venta']['id']}/detalles/{did}",{"cantidad":2})
+        self.assertEqual(result.json["total_venta"],40)
+        bad=self.independiente([{"id_producto":p.id_prod,"cantidad":1,"aplicar_descuento":"false"}])
+        self.assertEqual(bad.status_code,400)
+        self.assertEqual(Venta.query.count(),2)
+
+    def test_reporte_completo_cierre_y_reapertura(self):
+        self.grupal()
+        url=f"/api/jornadas/{self.jornada.id_jornada}"
+        r=self.client.get(url+"/reporte",headers=self.headers[0])
+        self.assertEqual(r.status_code,200,r.json)
+        self.assertTrue(r.json["cuadra"])
+        self.assertEqual(r.json["total"],36)
+        self.assertEqual(r.json["total_empresas"],36)
+        self.assertEqual(len(r.json["empresas"]),3)
+        cero=next(e for e in r.json["empresas"] if e["id"]==self.empresas[2].id_empresa)
+        self.assertEqual(cero["total"],0)
+        self.assertEqual(cero["ventas"],0)
+        self.assertEqual(r.json["metodos_pago"][0]["total"],36)
+        self.assertEqual(len(r.json["productos"]),3)
+        close=self.client.put(url+"/cerrar",headers=self.headers[0])
+        self.assertEqual(close.status_code,200,close.json)
+        self.assertFalse(db.session.get(Jornada,self.jornada.id_jornada).estado)
+        self.assertEqual(self.grupal().status_code,400)
+        self.assertEqual(self.client.get(url+"/reporte",headers=self.headers[0]).json["total"],36)
+        self.assertEqual(self.client.put(url+"/reactivar",headers=self.headers[0]).status_code,200)
+        self.assertTrue(self.jornada.estado)
+
+    def test_cierre_rechaza_inconsistencia_y_venta_sin_detalles(self):
+        self.grupal()
+        v=Venta.query.first()
+        v.total=37
+        db.session.commit()
+        url=f"/api/jornadas/{self.jornada.id_jornada}"
+        self.assertEqual(self.client.put(url+"/cerrar",headers=self.headers[0]).status_code,409)
+        self.assertTrue(self.jornada.estado)
+        # El DELETE existente tampoco debe permitir saltarse el cuadre.
+        self.assertEqual(self.client.delete(url,headers=self.headers[0]).status_code,409)
+        v.total=36
+        db.session.commit()
+        vacia=self.req("post",body={"id_jornada_cajero":self.jc.id_jor_caj,"id_metodo_pago":self.pago.id_metodos},user=2)
+        self.assertEqual(vacia.status_code,201)
+        r=self.client.get(url+"/reporte",headers=self.headers[0])
+        self.assertFalse(r.json["cuadra"])
+        self.assertEqual(self.client.put(url+"/cerrar",headers=self.headers[0]).status_code,409)
+
+    def test_reporte_y_cierre_solo_administrador(self):
+        url=f"/api/jornadas/{self.jornada.id_jornada}"
+        self.assertEqual(self.client.get(url+"/reporte").status_code,401)
+        self.assertEqual(self.client.put(url+"/cerrar").status_code,401)
+        for user in (1,2,3):
+            self.assertEqual(self.client.get(url+"/reporte",headers=self.headers[user]).status_code,403)
+            self.assertEqual(self.client.put(url+"/cerrar",headers=self.headers[user]).status_code,403)
+            self.assertEqual(self.client.put(url+"/reactivar",headers=self.headers[user]).status_code,403)
+        self.assertEqual(self.client.put(url+"/cerrar",headers=self.headers[0]).status_code,200)
+
+
 if __name__ == "__main__":
     unittest.main()
