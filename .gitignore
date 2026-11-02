@@ -65,4 +65,4 @@ desktop.ini
 *.temp
 *.bak
 node_modules/
-docs
+docs/
