@@ -356,3 +356,80 @@ class VentaService:
                 "dias": [{"fecha": str(r[0]), "ventas": int(r[1]), "unidades": int(r[2]), "total": float(r[3])} for r in evolucion]
             }, 200
         return VentaService.ejecutar(operacion)
+
+
+    @staticmethod
+    def consulta_ventas_productos(contexto, ids_productos, id_jornada=None, desde=None, hasta=None, tipo=None):
+        """Agregados históricos de detalles autorizados, nunca totales de otras empresas."""
+        from datetime import date, time
+        from app.models.jornada import Jornada
+        limites = {}
+        for nombre, valor in (("desde", desde), ("hasta", hasta)):
+            if valor not in (None, ""):
+                try:
+                    fecha = date.fromisoformat(valor)
+                    if fecha.isoformat() != valor:
+                        raise ValueError()
+                    limites[nombre] = fecha
+                except (ValueError, TypeError):
+                    raise VentaError("Las fechas deben tener formato YYYY-MM-DD.")
+        if limites.get("desde", date.min) > limites.get("hasta", date.max):
+            raise VentaError("La fecha inicial no puede ser posterior a la final.")
+        if tipo not in (None, "", "JORNADA", "INDEPENDIENTE"):
+            raise VentaError("Tipo de venta inválido.")
+        if id_jornada is not None and tipo == "INDEPENDIENTE":
+            raise VentaError("Las ventas independientes no pertenecen a una feria.")
+        if contexto["rol"] == "CAJERO" and tipo == "INDEPENDIENTE":
+            raise VentaError("En modo cajero solo puede consultar sus ventas de feria.", 403)
+        query = db.session.query(DetalleVenta).join(Venta, Venta.id_venta == DetalleVenta.venta_id_venta).join(
+            Producto, Producto.id_prod == DetalleVenta.producto_id_prod).outerjoin(
+            JornadaCajero, JornadaCajero.id_jor_caj == Venta.jornada_cajero_id_jor_caj).outerjoin(
+            Jornada, Jornada.id_jornada == JornadaCajero.jornada_id_jornada).join(
+            MetodoPago, MetodoPago.id_metodos == Venta.metodos_pago_id_metodos).join(
+            Persona, Persona.id_per == Venta.persona_id_per).filter(Producto.id_prod.in_(ids_productos))
+        if contexto["rol"] == "EMPRENDEDOR":
+            query = query.filter(Producto.empresa_id_empresa.in_(contexto["empresas"]))
+        elif contexto["rol"] == "CAJERO":
+            query = query.filter(Venta.tipo == "JORNADA", Venta.persona_id_per == contexto["persona"])
+        if id_jornada is not None:
+            query = query.filter(JornadaCajero.jornada_id_jornada == id_jornada, Venta.tipo == "JORNADA")
+        if tipo:
+            query = query.filter(Venta.tipo == tipo)
+        if "desde" in limites:
+            query = query.filter(Venta.fecha >= datetime.combine(limites["desde"], time.min))
+        if "hasta" in limites:
+            query = query.filter(Venta.fecha <= datetime.combine(limites["hasta"], time.max))
+        count = db.func.count(db.distinct(Venta.id_venta))
+        units = db.func.coalesce(db.func.sum(DetalleVenta.cantidad), 0)
+        amount = db.func.coalesce(db.func.sum(DetalleVenta.subtotal), 0)
+        def resumen(q, por_producto=False):
+            def vacio():
+                return {"cantidad_ventas": 0, "unidades_vendidas": 0, "ingreso_ventas": 0,
+                        "metodos_pago": [], "por_tipo": [], "ferias": [], "vendedores": []}
+            resultados = {pid: vacio() for pid in ids_productos} if por_producto else {None: vacio()}
+            prefijo = [Producto.id_prod] if por_producto else []
+            def filas(consulta, columnas, grupos, orden):
+                agrupada = consulta.with_entities(*(prefijo + columnas))
+                if prefijo or grupos:
+                    agrupada = agrupada.group_by(*(prefijo + grupos))
+                for fila in agrupada.order_by(*(prefijo + orden)).all():
+                    yield (fila[0], fila[1:]) if por_producto else (None, fila)
+            for pid, r in filas(q, [count, units, amount], [], []):
+                resultados[pid].update(cantidad_ventas=int(r[0]), unidades_vendidas=int(r[1]), ingreso_ventas=float(r[2]))
+            for pid, r in filas(q, [MetodoPago.nombre, count, units, amount], [MetodoPago.id_metodos, MetodoPago.nombre], [MetodoPago.nombre]):
+                resultados[pid]["metodos_pago"].append({"metodo": r[0], "cantidad_ventas": int(r[1]), "unidades": int(r[2]), "importe": float(r[3])})
+            for pid, r in filas(q, [Venta.tipo, count, units, amount], [Venta.tipo], [Venta.tipo]):
+                resultados[pid]["por_tipo"].append({"tipo": r[0], "cantidad_ventas": int(r[1]), "unidades": int(r[2]), "importe": float(r[3])})
+            for pid, r in filas(q.filter(Venta.tipo == "JORNADA"), [Jornada.nombre, Jornada.estado, count, units, amount],
+                               [Jornada.id_jornada, Jornada.nombre, Jornada.estado], [Jornada.id_jornada]):
+                resultados[pid]["ferias"].append({"nombre": r[0], "estado": "Activa" if r[1] else "Finalizada", "cantidad_ventas": int(r[2]), "unidades": int(r[3]), "importe": float(r[4])})
+            for pid, r in filas(q, [Persona.usuario, Persona.nombre, count, amount], [Persona.id_per, Persona.usuario, Persona.nombre], [Persona.id_per]):
+                resultados[pid]["vendedores"].append({"usuario": r[0], "nombre": r[1], "cantidad_ventas": int(r[2]), "importe": float(r[3])})
+            return resultados if por_producto else resultados[None]
+        globales = resumen(query)
+        globales.update({"periodo": {"desde": desde or None, "hasta": hasta or None},
+            "tipo": tipo or ("JORNADA" if id_jornada is not None else "TODOS"),
+            "alcance": "Solo mis ventas como cajero" if contexto["rol"] == "CAJERO" else "Ventas de los productos y empresas consultados",
+            "ganancia_neta": None,
+            "nota": "Importes históricos después de descuentos. Ingreso no es ganancia neta: no hay costos registrados. Las cantidades de ventas por producto no se suman porque una venta puede incluir varios productos."})
+        return globales, resumen(query, por_producto=True)

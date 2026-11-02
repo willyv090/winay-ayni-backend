@@ -13,14 +13,14 @@ def create_app():
         app,
         resources={
             r"/api/*": {
-                "origins": [
-                    "http://localhost:5173",
-                    "http://127.0.0.1:5173",
-                    "http://192.168.0.19:5173"
-                ]
+                "origins": app.config["CORS_ORIGINS"]
             }
         }
     )
+
+    @app.get("/health")
+    def health():
+        return {"status": "ok"}, 200
 
     db.init_app(app)
     jwt.init_app(app)

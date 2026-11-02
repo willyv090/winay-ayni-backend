@@ -64,3 +64,4 @@ desktop.ini
 *.tmp
 *.temp
 *.bak
+node_modules/

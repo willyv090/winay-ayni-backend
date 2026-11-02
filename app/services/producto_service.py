@@ -652,3 +652,144 @@ class ProductoService:
                 "error": "No se pudo actualizar el inventario.",
                 "detalle": str(e)
             }, 500
+
+    @staticmethod
+    def consulta_informativa(usuario_id, datos, opciones=False):
+        """Consulta de solo lectura; ningún dato de catálogo proviene del navegador."""
+        from flask import current_app
+        from sqlalchemy import or_
+        from urllib.parse import urlsplit
+        import httpx
+        import json
+        from app.services.venta_service import VentaService, VentaError
+        from app.models.jornada import Jornada
+        from app.models.jornada_cajero import JornadaCajero
+        from app.models.jornada_producto import JornadaProducto
+        from app.models.venta import Venta
+
+        try:
+            if not isinstance(datos, dict):
+                raise VentaError("Se requiere un objeto JSON.")
+            rol = datos.get("rol")
+            if not isinstance(rol, str) or rol not in ("ADMINISTRADOR", "EMPRENDEDOR", "CAJERO"):
+                raise VentaError("Seleccione un rol válido.")
+            contexto = VentaService.contexto(usuario_id, rol)
+            empresas = Empresa.query
+            jornadas = Jornada.query
+            if rol == "EMPRENDEDOR":
+                empresas = EmpresaService.consulta_propias(contexto["persona"])
+                jornadas = jornadas.filter(Jornada.id_jornada.in_(
+                    db.session.query(JornadaProducto.jornada_id_jornada).join(
+                        Producto, Producto.id_prod == JornadaProducto.producto_id_prod
+                    ).filter(Producto.empresa_id_empresa.in_(contexto["empresas"]))
+                ))
+            elif rol == "CAJERO":
+                jornadas_asignadas = db.session.query(JornadaCajero.jornada_id_jornada).join(Jornada).filter(
+                    JornadaCajero.persona_id_per == contexto["persona"], JornadaCajero.estado.is_(True), Jornada.estado.is_(True))
+                jornadas_vendidas = db.session.query(JornadaCajero.jornada_id_jornada).join(
+                    Venta, Venta.jornada_cajero_id_jor_caj == JornadaCajero.id_jor_caj).filter(
+                    Venta.tipo == "JORNADA", Venta.persona_id_per == contexto["persona"])
+                jornadas = jornadas.filter(or_(Jornada.id_jornada.in_(jornadas_asignadas), Jornada.id_jornada.in_(jornadas_vendidas)))
+                empresas_asignadas = db.session.query(Producto.empresa_id_empresa).join(
+                    JornadaProducto, JornadaProducto.producto_id_prod == Producto.id_prod).filter(
+                    Producto.estado.is_(True), JornadaProducto.estado.is_(True),
+                    JornadaProducto.jornada_id_jornada.in_(jornadas_asignadas))
+                empresas_vendidas = db.session.query(Producto.empresa_id_empresa).join(DetalleVenta).join(Venta).filter(
+                    Venta.tipo == "JORNADA", Venta.persona_id_per == contexto["persona"])
+                empresas = empresas.filter(or_(Empresa.id_empresa.in_(empresas_asignadas), Empresa.id_empresa.in_(empresas_vendidas)))
+            if opciones:
+                return {"empresas": [{"id": e.id_empresa, "nombre": e.nombre} for e in empresas.order_by(Empresa.nombre).all()],
+                        "jornadas": [{"id": j.id_jornada, "nombre": j.nombre, "estado": j.estado} for j in jornadas.order_by(Jornada.fecha_inicio.desc()).all()]}, 200
+
+            pregunta = datos.get("pregunta")
+            buscar = datos.get("buscar", "")
+            if not isinstance(pregunta, str) or not pregunta.strip() or len(pregunta) > 700:
+                raise VentaError("Escriba una pregunta de hasta 700 caracteres.")
+            if not isinstance(buscar, str) or len(buscar) > 100:
+                raise VentaError("El filtro debe tener hasta 100 caracteres.")
+            ids = {}
+            for campo in ("id_empresa", "id_jornada"):
+                valor = datos.get(campo)
+                ids[campo] = None if valor is None or valor == "" else VentaService.entero(valor, campo)
+            eid, jid = ids["id_empresa"], ids["id_jornada"]
+            if rol == "CAJERO" and jid is None:
+                raise VentaError("Seleccione una jornada asignada.")
+            if eid is not None and empresas.filter(Empresa.id_empresa == eid).first() is None:
+                raise VentaError("Empresa no disponible para esta consulta.", 403)
+            if jid is not None and jornadas.filter(Jornada.id_jornada == jid).first() is None:
+                raise VentaError("Jornada no disponible o asignación inactiva.", 403)
+
+            # Incluir productos archivados con ventas para no perder importes históricos.
+            historial = db.session.query(DetalleVenta.producto_id_prod).join(Venta, Venta.id_venta == DetalleVenta.venta_id_venta)
+            if rol == "CAJERO":
+                historial = historial.filter(Venta.tipo == "JORNADA", Venta.persona_id_per == contexto["persona"])
+            if jid is not None:
+                historial = historial.join(JornadaCajero, JornadaCajero.id_jor_caj == Venta.jornada_cajero_id_jor_caj).filter(JornadaCajero.jornada_id_jornada == jid)
+            inventario_permitido = rol != "CAJERO" or db.session.query(JornadaCajero.id_jor_caj).join(Jornada).filter(
+                JornadaCajero.persona_id_per == contexto["persona"], JornadaCajero.jornada_id_jornada == jid,
+                JornadaCajero.estado.is_(True), Jornada.estado.is_(True)).first() is not None
+            query = Producto.query.join(Empresa).filter(or_(
+                db.and_(Producto.estado.is_(True), Empresa.estado.is_(True)), Producto.id_prod.in_(historial)))
+            if not inventario_permitido:
+                query = query.filter(Producto.id_prod.in_(historial))
+            if rol == "EMPRENDEDOR":
+                query = query.filter(Producto.empresa_id_empresa.in_(contexto["empresas"]))
+            if eid is not None:
+                query = query.filter(Producto.empresa_id_empresa == eid)
+            if jid is not None:
+                query = query.filter(or_(Producto.id_prod.in_(db.session.query(JornadaProducto.producto_id_prod).filter(
+                    JornadaProducto.jornada_id_jornada == jid, JornadaProducto.estado.is_(True))), Producto.id_prod.in_(historial)))
+            if buscar.strip():
+                query = query.filter(or_(Producto.nombre.icontains(buscar.strip(), autoescape=True),
+                                         Empresa.nombre.icontains(buscar.strip(), autoescape=True)))
+            filas = query.order_by(Producto.nombre, Producto.id_prod).limit(31).all()
+            if len(filas) > 30:
+                raise VentaError("Hay más de 30 productos. Filtre por nombre, empresa o jornada para precisar la consulta.", 422)
+            resumen, ventas_producto = VentaService.consulta_ventas_productos(
+                contexto, [p.id_prod for p in filas], jid, datos.get("desde"), datos.get("hasta"), datos.get("tipo"))
+            if jid is not None:
+                j = db.session.get(Jornada, jid)
+                resumen["jornada_seleccionada"] = {"nombre": j.nombre, "estado": "Activa" if j.estado else "Finalizada",
+                    "direccion": j.direccion, "fecha_inicio": j.fecha_inicio.isoformat(), "fecha_fin": j.fecha_fin.isoformat()}
+            productos = []
+            for p in filas:
+                dato = ProductoService._producto_json(p)
+                productos.append({"nombre": dato["nombre"], "empresa": dato["empresa"]["nombre"],
+                    "precio": dato["precio_u"] if inventario_permitido else None,
+                    "descuento_opcional": dato["rebaja"] if inventario_permitido else None,
+                    "precio_con_descuento": dato["precio_final"] if inventario_permitido else None,
+                    "stock": dato["cantidad"] if inventario_permitido else None, "moneda": "BOB",
+                    "activo": bool(p.estado and p.empresa.estado), "ventas": ventas_producto[p.id_prod]})
+            if not productos:
+                return {"respuesta": "No hay productos ni ventas de productos que coincidan con los filtros dentro de su acceso.",
+                        "productos": [], "resumen_ventas": resumen, "generada": False}, 200
+            # Compatible con el Worker publicado: productos admite datos estructurados de ventas.
+            contexto_modelo = [dict(p) for p in productos]
+            contexto_modelo[0]["resumen_del_conjunto_consultado"] = resumen
+            payload = {"pregunta": "Usa inventario y ventas: importes, pagos y ferias. El resumen_del_conjunto_consultado es global. "
+                       "Ingreso no es ganancia neta. Stock actual; descuento opcional. "
+                       "Respeta el periodo de filtros; si pide otro, solicita ajustar fechas. Pregunta: " + pregunta.strip(),
+                       "productos": contexto_modelo}
+            if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > 19000:
+                raise VentaError("La consulta contiene demasiados datos. Precise el filtro de productos.", 422)
+            url = current_app.config.get("CLOUDFLARE_WORKER_URL", "")
+            clave = current_app.config.get("WINAY_API_KEY", "")
+            parsed = urlsplit(url)
+            if parsed.scheme != "https" or not (parsed.hostname or "").endswith(".workers.dev") or parsed.username or parsed.query or not clave:
+                return {"error": "El asistente aún no está configurado en el servidor."}, 503
+            # Liberar la transacción de lectura antes de esperar a un servicio externo.
+            db.session.rollback()
+            try:
+                response = httpx.post(url, headers={"Authorization": f"Bearer {clave}"},
+                                      json=payload, timeout=60, follow_redirects=False)
+                response.raise_for_status()
+                contenido = response.json()
+                texto = contenido.get("respuesta") if isinstance(contenido, dict) else None
+                if not isinstance(texto, str) or not texto.strip() or len(texto) > 12000:
+                    raise ValueError("Respuesta inválida")
+                return {"respuesta": texto.strip(), "productos": productos, "resumen_ventas": resumen, "generada": True}, 200
+            except (httpx.HTTPError, ValueError):
+                return {"respuesta": "No se pudo generar la respuesta en este momento. Puede revisar abajo los datos actuales y volver a consultar.",
+                        "productos": productos, "resumen_ventas": resumen, "generada": False}, 200
+        except VentaError as error:
+            return {"error": error.mensaje}, error.codigo

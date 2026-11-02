@@ -16,6 +16,8 @@ def validar_acceso_productos():
     if request.method == "OPTIONS":
         return None
     verify_jwt_in_request()
+    if request.endpoint == "producto.consulta_informativa":
+        return None  # El servicio valida el rol activo y el alcance de esta consulta.
     escritura = request.method != "GET"
     datos = request.get_json(silent=True) if escritura else None
     if request.method == "POST" or request.endpoint in (
@@ -191,4 +193,12 @@ def ajustar_stock(id_producto):
         notas=data.get("notas")
     )
 
+    return jsonify(respuesta), codigo
+
+@producto_bp.route("/consulta", methods=["GET", "POST"])
+def consulta_informativa():
+    datos = request.args.to_dict() if request.method == "GET" else request.get_json(silent=True)
+    respuesta, codigo = ProductoService.consulta_informativa(
+        get_jwt_identity(), datos, opciones=request.method == "GET"
+    )
     return jsonify(respuesta), codigo

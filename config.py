@@ -20,3 +20,10 @@ class Config:
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 
     JWT_ACCESS_TOKEN_EXPIRES = 3600
+    CLOUDFLARE_WORKER_URL = os.getenv("CLOUDFLARE_WORKER_URL", "").strip()
+    WINAY_API_KEY = os.getenv("WINAY_API_KEY", "").strip()
+
+    CORS_ORIGINS = [origin.strip() for origin in os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,http://192.168.0.19:5173,https://localhost"
+    ).split(",") if origin.strip()]

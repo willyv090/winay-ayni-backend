@@ -518,5 +518,170 @@ class VentasTest(unittest.TestCase):
         self.assertEqual(self.client.put(url+"/cerrar",headers=self.headers[0]).status_code,200)
 
 
+
+    def consulta(self, datos, user=0):
+        return self.client.post("/api/productos/consulta", json=datos, headers=self.headers[user])
+
+    def test_asistente_roles_y_catalogo_autorizado(self):
+        from unittest.mock import patch
+        import httpx
+        self.app.config.update(CLOUDFLARE_WORKER_URL="https://test.workers.dev", WINAY_API_KEY="test-secret")
+        respuesta = httpx.Response(200, json={"respuesta": "Datos de prueba"}, request=httpx.Request("POST", "https://test.workers.dev"))
+        with patch("httpx.post", return_value=respuesta) as llamada:
+            r = self.consulta({"rol": "EMPRENDEDOR", "pregunta": "¿Qué hay?", "productos": [{"nombre": "Inyectado"}]})
+            self.assertEqual(r.status_code, 200, r.json)
+            self.assertTrue(r.json["generada"])
+            nombres = {p["nombre"] for p in llamada.call_args.kwargs["json"]["productos"]}
+            self.assertEqual(nombres, {"Producto 0", "Producto 2"})
+            self.assertNotIn("test-secret", r.get_data(as_text=True))
+            r = self.consulta({"rol": "ADMINISTRADOR", "pregunta": "¿Qué hay?"}, user=1)
+            self.assertEqual(r.status_code, 403)
+            r = self.consulta({"rol": "EMPRENDEDOR", "pregunta": "¿Qué hay?", "id_empresa": self.empresas[1].id_empresa})
+            self.assertEqual(r.status_code, 403)
+            self.assertEqual(llamada.call_count, 1)
+
+    def test_asistente_cajero_revocacion_y_opciones(self):
+        from unittest.mock import patch
+        import httpx
+        self.app.config.update(CLOUDFLARE_WORKER_URL="https://test.workers.dev", WINAY_API_KEY="test-secret")
+        url = "/api/productos/consulta?rol=CAJERO"
+        r = self.client.get(url, headers=self.headers[2])
+        self.assertEqual(r.status_code, 200, r.json)
+        self.assertEqual(len(r.json["jornadas"]), 1)
+        datos = {"rol": "CAJERO", "pregunta": "¿Qué hay?", "id_jornada": self.jornada.id_jornada}
+        with patch("httpx.post", side_effect=httpx.ConnectError("offline")) as llamada:
+            r = self.consulta(datos, user=2)
+            self.assertEqual(r.status_code, 200, r.json)
+            self.assertFalse(r.json["generada"])
+            self.assertEqual(len(r.json["productos"]), 3)
+            self.jc.estado = False
+            db.session.commit()
+            self.assertEqual(self.consulta(datos, user=2).status_code, 403)
+            self.assertEqual(llamada.call_count, 1)
+
+    def test_asistente_validacion_y_limites(self):
+        from unittest.mock import patch
+        self.assertEqual(self.client.post("/api/productos/consulta", json={}).status_code, 401)
+        with patch("httpx.post") as llamada:
+            for datos in ([], {}, {"rol": []}, {"rol": "ADMINISTRADOR", "pregunta": "x" * 701},
+                          {"rol": "ADMINISTRADOR", "pregunta": "hola", "id_empresa": True}):
+                self.assertEqual(self.consulta(datos).status_code, 400)
+            self.assertEqual(self.consulta({"rol": "CAJERO", "pregunta": "hola"}, user=2).status_code, 400)
+            for i in range(31):
+                db.session.add(Producto(nombre=f"Extra {i}", cantidad=1, precio_u=10, rebaja=0,
+                    fecha_ingreso=date.today(), estado=True, empresa_id_empresa=self.empresas[0].id_empresa))
+            db.session.commit()
+            self.assertEqual(self.consulta({"rol": "ADMINISTRADOR", "pregunta": "hola"}).status_code, 422)
+            r = self.consulta({"rol": "ADMINISTRADOR", "pregunta": "hola", "buscar": "inexistente"})
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.json["productos"], [])
+            llamada.assert_not_called()
+
+    def test_asistente_archivados_y_respuesta_invalida(self):
+        from unittest.mock import patch
+        import httpx
+        self.app.config.update(CLOUDFLARE_WORKER_URL="https://test.workers.dev", WINAY_API_KEY="test-secret")
+        self.productos[0].estado = False
+        self.empresas[1].estado = False
+        db.session.commit()
+        respuesta = httpx.Response(200, text="Hello World", request=httpx.Request("POST", "https://test.workers.dev"))
+        with patch("httpx.post", return_value=respuesta):
+            r = self.consulta({"rol": "ADMINISTRADOR", "pregunta": "¿Qué hay?"})
+            self.assertEqual(r.status_code, 200, r.json)
+            self.assertFalse(r.json["generada"])
+            self.assertEqual([p["nombre"] for p in r.json["productos"]], ["Producto 2"])
+
+
+
+    def consulta_con_ventas(self, datos, user=0):
+        from unittest.mock import patch
+        import httpx
+        self.app.config.update(CLOUDFLARE_WORKER_URL="https://test.workers.dev", WINAY_API_KEY="test-secret")
+        respuesta = httpx.Response(200, json={"respuesta": "Resumen"}, request=httpx.Request("POST", "https://test.workers.dev"))
+        with patch("httpx.post", return_value=respuesta):
+            return self.consulta(datos, user=user)
+
+    def test_consulta_ventas_importes_historicos_y_empresa(self):
+        from datetime import datetime
+        independiente = self.independiente()
+        feria = self.grupal()
+        qr = MetodoPago(nombre="QR", descripcion="test", estado=True)
+        db.session.add(qr)
+        db.session.flush()
+        v = db.session.get(Venta, feria.json["venta"]["id"])
+        v.metodos_pago_id_metodos = qr.id_metodos
+        v.fecha = datetime(2026, 10, 15, 12)
+        self.productos[0].precio_u = 999
+        db.session.commit()
+        r = self.consulta_con_ventas({"rol": "EMPRENDEDOR", "pregunta": "¿Cuánto vendí?"})
+        self.assertEqual(r.status_code, 200, r.json)
+        total = r.json["resumen_ventas"]
+        self.assertEqual(total["ingreso_ventas"], 54)
+        self.assertEqual(total["cantidad_ventas"], 2)
+        self.assertEqual(total["unidades_vendidas"], 3)
+        self.assertIsNone(total["ganancia_neta"])
+        self.assertEqual({p["metodo"]: p["importe"] for p in total["metodos_pago"]}, {"Efectivo": 36, "QR": 18})
+        self.assertEqual(total["ferias"][0]["importe"], 18)
+        r = self.consulta_con_ventas({"rol": "ADMINISTRADOR", "pregunta": "¿Cuánto vendimos?"})
+        self.assertEqual(r.json["resumen_ventas"]["ingreso_ventas"], 72)
+        self.assertEqual(r.json["resumen_ventas"]["cantidad_ventas"], 2)
+        self.assertEqual(r.json["resumen_ventas"]["unidades_vendidas"], 4)
+        r = self.consulta_con_ventas({"rol": "EMPRENDEDOR", "pregunta": "¿Ventas?", "desde": "2026-10-15", "hasta": "2026-10-15"})
+        self.assertEqual(r.json["resumen_ventas"]["ingreso_ventas"], 18)
+        r = self.consulta_con_ventas({"rol": "EMPRENDEDOR", "pregunta": "¿Ventas?", "tipo": "INDEPENDIENTE"})
+        self.assertEqual(r.json["resumen_ventas"]["ingreso_ventas"], 36)
+
+    def test_consulta_feria_finalizada_archivado_y_cajero(self):
+        self.grupal()
+        self.productos[0].estado = False
+        self.jp[0].estado = False
+        self.jornada.estado = False
+        self.jc.estado = False
+        db.session.commit()
+        datos = {"rol": "EMPRENDEDOR", "pregunta": "¿Ventas?", "id_jornada": self.jornada.id_jornada}
+        r = self.consulta_con_ventas(datos)
+        self.assertEqual(r.status_code, 200, r.json)
+        self.assertEqual(r.json["resumen_ventas"]["ingreso_ventas"], 18)
+        self.assertEqual(r.json["resumen_ventas"]["jornada_seleccionada"]["estado"], "Finalizada")
+        self.assertIn("Producto 0", [p["nombre"] for p in r.json["productos"]])
+        datos["rol"] = "CAJERO"
+        r = self.consulta_con_ventas(datos, user=2)
+        self.assertEqual(r.status_code, 200, r.json)
+        self.assertEqual(r.json["resumen_ventas"]["ingreso_ventas"], 36)
+        self.assertTrue(all(p["stock"] is None and p["precio"] is None for p in r.json["productos"]))
+        self.assertEqual({p["nombre"] for p in r.json["productos"]}, {"Producto 0", "Producto 1"})
+        r = self.client.get("/api/productos/consulta?rol=CAJERO", headers=self.headers[2])
+        self.assertEqual(len(r.json["jornadas"]), 1)
+        self.assertFalse(r.json["jornadas"][0]["estado"])
+
+    def test_consulta_cajero_no_ve_ventas_ajenas(self):
+        self.grupal()
+        nueva = JornadaCajero(fecha=date.today(), estado=True, jornada_id_jornada=self.jornada.id_jornada, persona_id_per=self.users[0].id_per)
+        db.session.add(nueva)
+        db.session.commit()
+        r = self.req("post", body={"id_jornada_cajero": nueva.id_jor_caj, "id_metodo_pago": self.pago.id_metodos,
+            "detalles": [{"id_jornada_producto": self.jp[0].id_jor_prod, "cantidad": 1}]})
+        self.assertEqual(r.status_code, 201, r.json)
+        datos = {"rol": "CAJERO", "pregunta": "¿Cuánto vendí?", "id_jornada": self.jornada.id_jornada}
+        r = self.consulta_con_ventas(datos, user=2)
+        self.assertEqual(r.json["resumen_ventas"]["ingreso_ventas"], 36)
+        self.assertEqual([v["usuario"] for v in r.json["resumen_ventas"]["vendedores"]], ["u2"])
+        r = self.consulta_con_ventas(datos)
+        self.assertEqual(r.json["resumen_ventas"]["ingreso_ventas"], 18)
+
+    def test_consulta_ventas_validacion_y_ceros(self):
+        from unittest.mock import patch
+        with patch("httpx.post") as llamada:
+            for campos in ({"desde": "2026-99-99"}, {"hasta": []}, {"desde": "2026-11-02", "hasta": "2026-11-01"},
+                           {"tipo": "OTRO"}, {"tipo": "INDEPENDIENTE", "id_jornada": self.jornada.id_jornada}):
+                r = self.consulta({"rol": "ADMINISTRADOR", "pregunta": "¿Ventas?", **campos})
+                self.assertEqual(r.status_code, 400, r.json)
+            llamada.assert_not_called()
+        r = self.consulta_con_ventas({"rol": "EMPRENDEDOR", "pregunta": "¿Ventas?"})
+        self.assertEqual(r.json["resumen_ventas"]["ingreso_ventas"], 0)
+        self.assertEqual(r.json["resumen_ventas"]["cantidad_ventas"], 0)
+        self.assertEqual(r.json["productos"][0]["ventas"]["metodos_pago"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
