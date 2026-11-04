@@ -540,6 +540,23 @@ class VentasTest(unittest.TestCase):
             self.assertEqual(r.status_code, 403)
             self.assertEqual(llamada.call_count, 1)
 
+    def test_asistente_descripcion_desde_notas(self):
+        from unittest.mock import patch
+        import httpx
+        self.productos[0].notas = "Perfume floral de 50 ml."
+        self.productos[2].notas = " "
+        db.session.commit()
+        self.app.config.update(CLOUDFLARE_WORKER_URL="https://test.workers.dev", WINAY_API_KEY="test-secret")
+        with patch("httpx.post", side_effect=httpx.ConnectError("offline")) as llamada:
+            r = self.consulta({"rol": "EMPRENDEDOR", "pregunta": "x" * 700})
+            self.assertEqual(r.status_code, 200, r.json)
+            productos = {p["nombre"]: p for p in r.json["productos"]}
+            self.assertEqual(productos["Producto 0"]["notas"], "Perfume floral de 50 ml.")
+            self.assertIsNone(productos["Producto 2"]["notas"])
+            payload = llamada.call_args.kwargs["json"]
+            self.assertLessEqual(len(payload["pregunta"]), 1000)
+            self.assertEqual(payload["productos"][0]["notas"], "Perfume floral de 50 ml.")
+
     def test_asistente_cajero_revocacion_y_opciones(self):
         from unittest.mock import patch
         import httpx
