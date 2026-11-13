@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 
+from app.permisos import solo_administrador
 from app.services.jornada_service import JornadaService
 
 
@@ -16,6 +17,7 @@ jornada_bp = Blueprint(
 # ==========================================
 
 @jornada_bp.route("", methods=["POST"])
+@solo_administrador
 def crear_jornada():
 
     data = request.get_json()
@@ -40,6 +42,7 @@ def crear_jornada():
 # ==========================================
 
 @jornada_bp.route("", methods=["GET"])
+@solo_administrador
 def listar_jornadas():
 
     estado = request.args.get("estado")
@@ -90,6 +93,7 @@ def listar_jornadas():
     "/<int:id_jornada>",
     methods=["GET"]
 )
+@solo_administrador
 def obtener_jornada(id_jornada):
 
     respuesta, codigo = JornadaService.obtener_jornada(
@@ -107,6 +111,7 @@ def obtener_jornada(id_jornada):
     "/<int:id_jornada>",
     methods=["PUT"]
 )
+@solo_administrador
 def editar_jornada(id_jornada):
 
     data = request.get_json()
@@ -171,15 +176,8 @@ def eliminar_jornada(id_jornada):
     "/<int:id_jornada>/reactivar",
     methods=["PUT"]
 )
-@jwt_required()
+@solo_administrador
 def reactivar_jornada(id_jornada):
-    from app.services.venta_service import VentaService, VentaError
-    try:
-        VentaService.contexto(get_jwt_identity(), "ADMINISTRADOR")
-    except VentaError as error:
-        return jsonify({"error": error.mensaje}), error.codigo
-
-
     respuesta, codigo = JornadaService.reactivar_jornada(
         id_jornada
     )

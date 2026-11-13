@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required
+from app.permisos import solo_administrador
 from app.services.rol_service import RolService
 
 
@@ -10,7 +10,7 @@ rol_bp = Blueprint(
 )
 
 @rol_bp.route("", methods=["GET"])
-@jwt_required()
+@solo_administrador
 def listar_roles():
 
     respuesta, codigo = RolService.listar_roles()
@@ -19,6 +19,7 @@ def listar_roles():
 
 # CREAR
 @rol_bp.route("", methods=["POST"])
+@solo_administrador
 def crear_rol():
 
     data = request.get_json()
@@ -38,6 +39,7 @@ def crear_rol():
 
 # EDITAR
 @rol_bp.route("/<int:id_rol>", methods=["PUT"])
+@solo_administrador
 def editar_rol(id_rol):
 
     data = request.get_json()
@@ -58,6 +60,7 @@ def editar_rol(id_rol):
 
 # ELIMINAR
 @rol_bp.route("/<int:id_rol>", methods=["DELETE"])
+@solo_administrador
 def eliminar_rol(id_rol):
 
     respuesta, codigo = RolService.eliminar_rol(
@@ -68,6 +71,7 @@ def eliminar_rol(id_rol):
 
 #REACTIVAR
 @rol_bp.route("/<int:id_rol>/reactivar", methods=["PUT"])
+@solo_administrador
 def reactivar_rol(id_rol):
 
     respuesta, codigo = RolService.reactivar_rol(id_rol)

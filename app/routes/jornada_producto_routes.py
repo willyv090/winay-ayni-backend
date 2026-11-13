@@ -1,5 +1,6 @@
 from flask import Blueprint, request, jsonify
 
+from app.permisos import solo_administrador
 from app.services.jornada_producto_service import JornadaProductoService
 
 
@@ -15,6 +16,7 @@ jornada_producto_bp = Blueprint(
     "/<int:id_jornada>/empresas/<int:id_empresa>/productos",
     methods=["POST"]
 )
+@solo_administrador
 def asignar_productos(id_jornada, id_empresa):
 
     data = request.get_json()
@@ -38,6 +40,7 @@ def asignar_productos(id_jornada, id_empresa):
     "/<int:id_jornada>/productos",
     methods=["GET"]
 )
+@solo_administrador
 def listar_productos(id_jornada):
 
     respuesta, codigo = JornadaProductoService.listar_productos(
@@ -52,6 +55,7 @@ def listar_productos(id_jornada):
     "/<int:id_jornada>/productos/<int:id_producto>",
     methods=["DELETE"]
 )
+@solo_administrador
 def quitar_producto(id_jornada, id_producto):
 
     respuesta, codigo = JornadaProductoService.quitar_producto(

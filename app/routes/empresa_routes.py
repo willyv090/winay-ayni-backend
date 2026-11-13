@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 
+from app.permisos import solo_administrador
 from app.services.empresa_service import EmpresaService
 
 
@@ -13,6 +14,7 @@ empresa_bp = Blueprint(
 
 # CREAR
 @empresa_bp.route("", methods=["POST"])
+@solo_administrador
 def crear_empresa():
 
     data = request.get_json()
@@ -34,6 +36,7 @@ def crear_empresa():
 
 # LISTAR
 @empresa_bp.route("", methods=["GET"])
+@solo_administrador
 def listar_empresas():
 
     respuesta, codigo = EmpresaService.listar_empresas()
@@ -42,7 +45,7 @@ def listar_empresas():
 
 # LISTAR POR ID
 @empresa_bp.route("/<int:id_empresa>", methods=["GET"])
-@jwt_required()
+@solo_administrador
 def obtener_empresa(id_empresa):
 
     respuesta, codigo = EmpresaService.obtener_empresa(
@@ -53,6 +56,7 @@ def obtener_empresa(id_empresa):
 
 # EDITAR
 @empresa_bp.route("/<int:id_empresa>", methods=["PUT"])
+@solo_administrador
 def editar_empresa(id_empresa):
 
     data = request.get_json()
@@ -75,6 +79,7 @@ def editar_empresa(id_empresa):
 
 # ELIMINAR
 @empresa_bp.route("/<int:id_empresa>", methods=["DELETE"])
+@solo_administrador
 def eliminar_empresa(id_empresa):
 
     respuesta, codigo = EmpresaService.eliminar_empresa(
@@ -89,6 +94,7 @@ def eliminar_empresa(id_empresa):
     "/<int:id_empresa>/reactivar",
     methods=["PUT"]
 )
+@solo_administrador
 def reactivar_empresa(id_empresa):
 
     respuesta, codigo = EmpresaService.reactivar_empresa(

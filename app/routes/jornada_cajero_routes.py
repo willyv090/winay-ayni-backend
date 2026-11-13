@@ -1,5 +1,6 @@
 from flask import Blueprint, request, jsonify
 
+from app.permisos import solo_administrador
 from app.services.jornada_cajero_service import JornadaCajeroService
 
 
@@ -15,6 +16,7 @@ jornada_cajero_bp = Blueprint(
     "/<int:id_jornada>/cajeros",
     methods=["POST"]
 )
+@solo_administrador
 def asignar_cajeros(id_jornada):
 
     data = request.get_json()
@@ -37,6 +39,7 @@ def asignar_cajeros(id_jornada):
     "/<int:id_jornada>/cajeros",
     methods=["GET"]
 )
+@solo_administrador
 def listar_cajeros(id_jornada):
 
     respuesta, codigo = JornadaCajeroService.listar_cajeros(
@@ -51,6 +54,7 @@ def listar_cajeros(id_jornada):
     "/<int:id_jornada>/cajeros/<int:id_persona>",
     methods=["DELETE"]
 )
+@solo_administrador
 def quitar_cajero(id_jornada, id_persona):
 
     respuesta, codigo = JornadaCajeroService.quitar_cajero(

@@ -1,5 +1,7 @@
 from flask import Blueprint, request, jsonify
 
+from flask_jwt_extended import jwt_required
+from app.permisos import solo_administrador
 from app.services.metodo_pago_service import MetodoPagoService
 
 
@@ -15,6 +17,7 @@ metodo_pago_bp = Blueprint(
 # ==========================================
 
 @metodo_pago_bp.route("", methods=["POST"])
+@solo_administrador
 def crear_metodo_pago():
 
     data = request.get_json()
@@ -37,6 +40,7 @@ def crear_metodo_pago():
 # ==========================================
 
 @metodo_pago_bp.route("", methods=["GET"])
+@jwt_required()
 def listar_metodos_pago():
 
     estado = request.args.get("estado")
@@ -69,6 +73,7 @@ def listar_metodos_pago():
     "/<int:id_metodo>",
     methods=["GET"]
 )
+@jwt_required()
 def obtener_metodo_pago(id_metodo):
 
     respuesta, codigo = MetodoPagoService.obtener_metodo_pago(
@@ -86,6 +91,7 @@ def obtener_metodo_pago(id_metodo):
     "/<int:id_metodo>",
     methods=["PUT"]
 )
+@solo_administrador
 def editar_metodo_pago(id_metodo):
 
     data = request.get_json()
@@ -112,6 +118,7 @@ def editar_metodo_pago(id_metodo):
     "/<int:id_metodo>",
     methods=["DELETE"]
 )
+@solo_administrador
 def eliminar_metodo_pago(id_metodo):
 
     respuesta, codigo = MetodoPagoService.eliminar_metodo_pago(
@@ -129,6 +136,7 @@ def eliminar_metodo_pago(id_metodo):
     "/<int:id_metodo>/reactivar",
     methods=["PUT"]
 )
+@solo_administrador
 def reactivar_metodo_pago(id_metodo):
 
     respuesta, codigo = MetodoPagoService.reactivar_metodo_pago(

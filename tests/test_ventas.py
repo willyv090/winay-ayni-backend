@@ -14,7 +14,7 @@ from app.models import (Persona, Rol, RolPersona, Empresa, PersonaEmpresa,
 from flask_jwt_extended import create_access_token
 
 
-class VentasTest(unittest.TestCase):
+class BaseApiTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = create_app()
@@ -56,6 +56,8 @@ class VentasTest(unittest.TestCase):
         db.drop_all()
         self.ctx.pop()
 
+
+class VentasTest(BaseApiTest):
     def req(self, method, path="", body=None, user=0):
         return getattr(self.client,method)("/api/ventas"+path, json=body, headers=self.headers[user])
 
@@ -698,6 +700,359 @@ class VentasTest(unittest.TestCase):
         self.assertEqual(r.json["resumen_ventas"]["ingreso_ventas"], 0)
         self.assertEqual(r.json["resumen_ventas"]["cantidad_ventas"], 0)
         self.assertEqual(r.json["productos"][0]["ventas"]["metodos_pago"], [])
+
+
+
+class GestionTest(BaseApiTest):
+    """Flujos de gestión anteriores al cobro y límites de acceso entre roles."""
+
+    def api(self, metodo, ruta, datos=None, usuario=0):
+        headers = self.headers[usuario] if usuario is not None else {}
+        return self.client.open("/api/" + ruta, method=metodo, headers=headers, json=datos)
+
+    def datos_persona(self):
+        return {"nombre": "Ana", "usuario": "ana", "contrasenia": "solo-en-pruebas",
+                "roles": [self.roles[1].id_rol, self.roles[2].id_rol]}
+
+    def nueva_jornada(self):
+        datos = {"nombre": "Feria de prueba", "direccion": "Plaza", "fecha_inicio": "2026-09-21",
+                 "fecha_fin": "2026-09-23"}
+        respuesta = self.api("POST", "jornadas", datos)
+        self.assertEqual(respuesta.status_code, 201, respuesta.json)
+        return respuesta.json["jornada"]["id"]
+
+    def test_registro_login_multirol_y_uso_del_token(self):
+        datos = self.datos_persona()
+        alta = self.api("POST", "personas", datos)
+        self.assertEqual(alta.status_code, 201, alta.json)
+        persona = Persona.query.filter_by(usuario="ana").one()
+        self.assertNotEqual(persona.contrasenia, datos["contrasenia"])
+        login = self.api("POST", "auth/login", datos, usuario=None)
+        self.assertEqual(login.status_code, 200, login.json)
+        self.assertCountEqual(login.json["usuario"]["roles"], ["CAJERO", "EMPRENDEDOR"])
+        self.assertNotIn("contrasenia", login.json["usuario"])
+        token = {"Authorization": "Bearer " + login.json["token"]}
+        self.assertEqual(self.client.get("/api/empresas/mias", headers=token).status_code, 200)
+
+    def test_login_rechaza_datos_incompletos_desconocidos_e_inactivos(self):
+        datos = self.datos_persona()
+        alta = self.api("POST", "personas", datos)
+        self.assertEqual(alta.status_code, 201, alta.json)
+        for nombre, clave, esperado in [("ana", "", 400), ("nadie", "prueba", 401),
+                                         ("ana", "equivocada", 401)]:
+            with self.subTest(usuario=nombre, estado=esperado):
+                r = self.api("POST", "auth/login", {"usuario": nombre, "contrasenia": clave}, usuario=None)
+                self.assertEqual(r.status_code, esperado)
+                self.assertNotIn("token", r.json)
+        ruta = "personas/" + str(alta.json["persona"]["id"])
+        self.assertEqual(self.api("DELETE", ruta).status_code, 200)
+        r = self.api("POST", "auth/login", datos, usuario=None)
+        self.assertEqual(r.status_code, 403)
+        self.assertNotIn("token", r.json)
+        self.assertEqual(self.api("PUT", ruta + "/reactivar").status_code, 200)
+        self.assertEqual(self.api("POST", "auth/login", datos, usuario=None).status_code, 200)
+
+    def test_usuario_duplicado_y_rol_inexistente_no_crean_registros(self):
+        datos = self.datos_persona()
+        for valores, estado in [({"usuario": "u0"}, 409), ({"roles": [99999]}, 404)]:
+            with self.subTest(valores=valores):
+                respuesta = self.api("POST", "personas", {**datos, **valores})
+                self.assertEqual(respuesta.status_code, estado)
+                self.assertEqual(Persona.query.count(), 4)
+
+    def test_editar_roles_y_recuperar_solo_roles_habilitados(self):
+        datos = self.datos_persona()
+        alta = self.api("POST", "personas", datos)
+        self.assertEqual(alta.status_code, 201, alta.json)
+        ruta = "personas/" + str(alta.json["persona"]["id"])
+        edicion = {"nombre": "Ana Pérez", "usuario": "ana", "roles": [self.roles[2].id_rol]}
+        self.assertEqual(self.api("PUT", ruta, edicion).status_code, 200)
+        self.assertEqual(self.api("POST", "auth/login", datos).json["usuario"]["roles"], ["CAJERO"])
+        self.assertEqual(self.api("DELETE", f"roles/{self.roles[2].id_rol}").status_code, 200)
+        self.assertEqual(self.api("POST", "auth/login", datos).json["usuario"]["roles"], [])
+        self.assertEqual(self.api("PUT", f"roles/{self.roles[2].id_rol}/reactivar").status_code, 200)
+        self.assertEqual(self.api("POST", "auth/login", datos).json["usuario"]["roles"], ["CAJERO"])
+
+    def test_editar_nombre_con_roles_marcados_conserva_las_asignaciones(self):
+        persona = self.users[0]
+        ids_roles = [rol.id_rol for rol in self.roles]
+        r = self.api("PUT", f"personas/{persona.id_per}",
+                     {"nombre": "Nuevo nombre", "usuario": persona.usuario, "roles": ids_roles})
+        self.assertEqual(r.status_code, 200, r.json)
+        db.session.expire_all()
+        self.assertEqual(persona.nombre, "Nuevo nombre")
+        activos = RolPersona.query.filter_by(persona_id_per=persona.id_per, estado=True).all()
+        self.assertCountEqual([asignacion.rol_id_rol for asignacion in activos], ids_roles)
+
+    def test_edicion_sin_roles_se_rechaza_y_conserva_la_cuenta(self):
+        persona = self.users[0]
+        pid, nombre = persona.id_per, persona.nombre
+        ids_roles = [rol.id_rol for rol in self.roles]
+        r = self.api("PUT", f"personas/{pid}",
+                     {"nombre": "Cambio inválido", "usuario": persona.usuario, "roles": []})
+        self.assertEqual(r.status_code, 400, r.json)
+        self.assertIn("rol", r.json["error"])
+        db.session.remove()
+        self.assertEqual(db.session.get(Persona, pid).nombre, nombre)
+        activos = RolPersona.query.filter_by(persona_id_per=pid, estado=True).all()
+        self.assertCountEqual([asignacion.rol_id_rol for asignacion in activos], ids_roles)
+
+    def test_empresa_vinculada_visible_solo_a_su_integrante(self):
+        persona = self.users[1]
+        r = self.api("POST", "empresas", {"nombre": "Taller", "telefono": 555,
+                                         "personas": [persona.id_per, persona.id_per]})
+        self.assertEqual(r.status_code, 201, r.json)
+        eid = r.json["empresa"]["id"]
+        self.assertEqual(PersonaEmpresa.query.filter_by(empresa_id_empresa=eid).count(), 1)
+        ruta = f"empresas/mias/{eid}"
+        self.assertIn(eid, [e["id"] for e in self.api("GET", "empresas/mias", usuario=1).json["empresas"]])
+        self.assertEqual(self.api("GET", ruta, usuario=1).status_code, 200)
+        self.assertEqual(self.api("GET", ruta, usuario=0).status_code, 404)
+        self.assertEqual(self.api("GET", ruta, usuario=2).status_code, 403)
+
+    def test_empresa_rechaza_duplicado_y_revierte_alta_con_integrante_invalido(self):
+        for nombre, personas, estado in [("EMPRESA 0", [], 409), ("Nueva", [self.users[1].id_per, 99999], 400)]:
+            with self.subTest(nombre=nombre):
+                r = self.api("POST", "empresas", {"nombre": nombre, "telefono": 555, "personas": personas})
+                self.assertEqual(r.status_code, estado)
+                self.assertEqual(Empresa.query.count(), 3)
+                self.assertEqual(PersonaEmpresa.query.count(), 3)
+
+    def test_inventario_crear_editar_archivar_y_recuperar(self):
+        eid = self.empresas[1].id_empresa
+        datos = {"nombre": "Perfume", "cantidad": 5, "precio_u": 10, "rebaja": 3,
+                 "fecha_ingreso": "2026-09-20", "notas": "Aroma floral", "id_empresa": eid}
+        alta = self.api("POST", "productos?ambito=propio", datos, usuario=1)
+        self.assertEqual(alta.status_code, 201, alta.json)
+        pid = alta.json["producto"]["id"]
+        ruta = f"productos/{pid}"
+        cambio = self.api("PUT", ruta + "?ambito=propio", {**datos, "nombre": "Perfume floral", "precio_u": 12}, usuario=1)
+        self.assertEqual(cambio.status_code, 200, cambio.json)
+        detalle = self.api("GET", ruta, usuario=1).json["producto"]
+        self.assertEqual((detalle["precio_final"], detalle["notas"]), (9, "Aroma floral"))
+        lista = f"productos/empresa/{eid}?buscar=floral&ambito=propio"
+        self.assertEqual(self.api("DELETE", ruta, usuario=1).status_code, 200)
+        self.assertEqual(self.api("GET", lista, usuario=1).json["productos"], [])
+        archivados = self.api("GET", lista + "&estado=archivados", usuario=1).json["productos"]
+        self.assertEqual([p["id"] for p in archivados], [pid])
+        self.assertEqual(self.api("PUT", ruta + "/reactivar", usuario=1).status_code, 200)
+        p = self.api("GET", lista, usuario=1).json["productos"][0]
+        self.assertEqual((p["id"], p["cantidad"]), (pid, 5))
+
+    def test_producto_invalido_o_de_empresa_ajena_no_se_crea(self):
+        datos = {"nombre": "Nuevo", "cantidad": 1, "precio_u": 10, "fecha_ingreso": "2026-09-20",
+                 "id_empresa": self.empresas[1].id_empresa}
+        for cambio, estado in [({"cantidad": -1}, 400), ({"rebaja": 11}, 400),
+                               ({"id_empresa": self.empresas[0].id_empresa}, 404)]:
+            with self.subTest(cambio=cambio):
+                r = self.api("POST", "productos?ambito=propio", {**datos, **cambio}, usuario=1)
+                self.assertEqual(r.status_code, estado, r.json)
+                self.assertEqual(Producto.query.count(), 3)
+
+    def test_jornada_se_crea_sin_asignaciones_y_se_filtra_por_fecha(self):
+        jid = self.nueva_jornada()
+        self.assertEqual(JornadaCajero.query.filter_by(jornada_id_jornada=jid).count(), 0)
+        self.assertEqual(JornadaProducto.query.filter_by(jornada_id_jornada=jid).count(), 0)
+        cambio = {"nombre": "Feria ampliada", "direccion": "Centro", "fecha_inicio": "2026-09-21",
+                  "fecha_fin": "2026-09-24"}
+        self.assertEqual(self.api("PUT", f"jornadas/{jid}", cambio).status_code, 200)
+        detalle = self.api("GET", f"jornadas/{jid}").json["jornada"]
+        self.assertEqual((detalle["nombre"], detalle["fecha_fin"]), ("Feria ampliada", "2026-09-24"))
+        for fecha, incluido in [("2026-09-24", True), ("2026-09-25", False)]:
+            filas = self.api("GET", f"jornadas?estado=true&fecha={fecha}").json["jornadas"]
+            self.assertEqual(jid in [j["id"] for j in filas], incluido)
+
+    def test_jornada_rechaza_fechas_invalidas(self):
+        for fin in ("2026-09-19", "no-es-fecha"):
+            with self.subTest(fin=fin):
+                r = self.api("POST", "jornadas", {"nombre": "Inválida", "direccion": "Centro",
+                             "fecha_inicio": "2026-09-20", "fecha_fin": fin})
+                self.assertEqual(r.status_code, 400)
+                self.assertEqual(Jornada.query.count(), 1)
+
+    def test_asignacion_multiple_retiro_y_reasignacion_de_cajeros(self):
+        jid = self.nueva_jornada()
+        ruta = f"jornadas/{jid}/cajeros"
+        a, b = self.users[0].id_per, self.users[2].id_per
+        self.assertEqual(self.api("POST", ruta, {"personas": [a, 99999]}).status_code, 400)
+        self.assertEqual(self.api("GET", ruta).json["cajeros"], [])
+        self.assertEqual(self.api("POST", ruta, {"personas": [a, b, b]}).status_code, 200)
+        self.assertEqual(self.api("DELETE", f"{ruta}/{b}").status_code, 200)
+        filas = self.api("GET", ruta).json["cajeros"]
+        self.assertEqual({c["persona"]["id"]: c["estado"] for c in filas}, {a: True, b: False})
+        self.assertEqual(self.api("POST", ruta, {"personas": [b]}).status_code, 200)
+        filas = self.api("GET", ruta).json["cajeros"]
+        self.assertEqual(len(filas), 2)
+        self.assertTrue(all(c["estado"] for c in filas))
+
+    def test_productos_de_feria_asignacion_multiple_sin_alterar_inventario(self):
+        jid = self.nueva_jornada()
+        eid = self.empresas[0].id_empresa
+        alta = self.api("POST", "productos", {"nombre": "Segundo", "cantidad": 3, "precio_u": 8,
+                        "fecha_ingreso": "2026-09-20", "id_empresa": eid})
+        self.assertEqual(alta.status_code, 201, alta.json)
+        a, b = self.productos[0].id_prod, alta.json["producto"]["id"]
+        ruta = f"jornadas/{jid}/empresas/{eid}/productos"
+        self.assertEqual(self.api("POST", ruta, {"productos": [a, self.productos[1].id_prod]}).status_code, 400)
+        relaciones = JornadaProducto.query.filter_by(jornada_id_jornada=jid)
+        self.assertEqual(relaciones.count(), 0)
+        self.assertEqual(self.api("POST", ruta, {"productos": [a, b, b]}).status_code, 200)
+        self.assertEqual(self.api("DELETE", f"jornadas/{jid}/productos/{a}").status_code, 200)
+        self.assertFalse(relaciones.filter_by(producto_id_prod=a).one().estado)
+        self.assertTrue(self.productos[0].estado)
+        self.assertEqual(self.productos[0].cantidad, 10)
+        self.assertEqual(self.api("POST", ruta, {"productos": [a]}).status_code, 200)
+        self.assertEqual(relaciones.filter_by(estado=True).count(), 2)
+        self.assertEqual(relaciones.count(), 2)
+
+    def test_jornada_cerrada_rechaza_nuevas_asignaciones(self):
+        jid = self.nueva_jornada()
+        self.assertEqual(self.api("PUT", f"jornadas/{jid}/cerrar").status_code, 200)
+        caja = self.api("POST", f"jornadas/{jid}/cajeros", {"personas": [self.users[2].id_per]})
+        productos = self.api("POST", f"jornadas/{jid}/empresas/{self.empresas[0].id_empresa}/productos",
+                             {"productos": [self.productos[0].id_prod]})
+        self.assertEqual((caja.status_code, productos.status_code), (400, 400))
+        self.assertEqual(JornadaProducto.query.filter_by(jornada_id_jornada=jid).count(), 0)
+        self.assertEqual(JornadaCajero.query.filter_by(jornada_id_jornada=jid).count(), 0)
+
+    def test_cobro_con_qr_o_billetera_se_conserva_en_el_reporte(self):
+        for nombre in ("QR", "Billetera móvil"):
+            with self.subTest(metodo=nombre):
+                alta = self.api("POST", "metodos-pago", {"nombre": nombre, "descripcion": nombre})
+                self.assertEqual(alta.status_code, 201, alta.json)
+                mid = alta.json["metodo_pago"]["id"]
+                cobro = {"id_jornada_cajero": self.jc.id_jor_caj, "id_metodo_pago": mid,
+                         "detalles": [{"id_jornada_producto": self.jp[0].id_jor_prod, "cantidad": 1,
+                                       "aplicar_descuento": False}]}
+                self.assertEqual(self.api("POST", "ventas", cobro, usuario=2).status_code, 201)
+                self.assertEqual(self.api("DELETE", f"metodos-pago/{mid}").status_code, 200)
+                self.assertEqual(self.api("POST", "ventas", cobro, usuario=2).status_code, 404)
+                reporte = self.api("GET", f"jornadas/{self.jornada.id_jornada}/reporte").json
+                self.assertEqual(next(p for p in reporte["metodos_pago"] if p["nombre"] == alta.json["metodo_pago"]["nombre"])["total"], 20)
+
+    def test_cuadre_feria_dos_empresas_por_qr(self):
+        a, b = self.productos[:2]
+        a.precio_u, a.rebaja, a.cantidad = Decimal("10"), Decimal("3"), 5
+        b.precio_u, b.rebaja, b.cantidad = Decimal("8"), None, 4
+        pago = MetodoPago(nombre="QR", descripcion="Prueba", estado=True)
+        db.session.add(pago)
+        db.session.commit()
+        datos = {"id_jornada_cajero": self.jc.id_jor_caj, "id_metodo_pago": pago.id_metodos,
+                 "detalles": [{"id_jornada_producto": self.jp[0].id_jor_prod, "cantidad": 2, "aplicar_descuento": True},
+                              {"id_jornada_producto": self.jp[1].id_jor_prod, "cantidad": 1, "aplicar_descuento": False}]}
+        r = self.api("POST", "ventas", datos, usuario=2)
+        self.assertEqual(r.status_code, 201, r.json)
+        self.assertEqual(r.json["venta"]["total"], 22)
+        db.session.expire_all()
+        self.assertEqual((a.cantidad, b.cantidad), (3, 3))
+        venta = Venta.query.one()
+        self.assertEqual((venta.persona_id_per, venta.metodos_pago_id_metodos), (self.users[2].id_per, pago.id_metodos))
+        rep = self.api("GET", f"jornadas/{self.jornada.id_jornada}/reporte").json
+        totales = {e["id"]: e["total"] for e in rep["empresas"]}
+        self.assertEqual((totales[a.empresa_id_empresa], totales[b.empresa_id_empresa]), (14, 8))
+        self.assertTrue(rep["cuadra"])
+        self.assertEqual(rep["total"], 22)
+
+    def test_retirar_y_restaurar_acceso_a_empresa(self):
+        empresa = self.empresas[1]
+        eid = empresa.id_empresa
+        ruta = f"empresas/{eid}"
+        datos = {"nombre": "Taller actualizado", "telefono": 777, "direccion": "Plaza"}
+        for personas, estado in [([], 404), ([self.users[1].id_per], 200)]:
+            with self.subTest(personas=personas):
+                r = self.api("PUT", ruta, {**datos, "personas": personas})
+                self.assertEqual(r.status_code, 200, r.json)
+                detalle = self.api("GET", f"empresas/mias/{eid}", usuario=1)
+                self.assertEqual(detalle.status_code, estado)
+        self.assertEqual(self.api("DELETE", ruta).status_code, 200)
+        self.assertFalse(self.api("GET", ruta).json["empresa"]["estado"])
+        self.assertEqual(self.api("PUT", ruta + "/reactivar").status_code, 200)
+        self.assertTrue(self.api("GET", ruta).json["empresa"]["estado"])
+
+    def test_retiro_de_cajero_preserva_el_cobro_y_bloquea_la_siguiente_venta(self):
+        datos = {"id_jornada_cajero": self.jc.id_jor_caj, "id_metodo_pago": self.pago.id_metodos,
+                 "detalles": [{"id_jornada_producto": self.jp[0].id_jor_prod, "cantidad": 1}]}
+        self.assertEqual(self.api("POST", "ventas", datos, usuario=2).status_code, 201)
+        r = self.api("DELETE", f"jornadas/{self.jornada.id_jornada}/cajeros/{self.users[2].id_per}")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.api("POST", "ventas", datos, usuario=2).status_code, 403)
+        self.assertEqual(Venta.query.one().persona_id_per, self.users[2].id_per)
+        self.assertEqual(self.productos[0].cantidad, 9)
+
+    def comprobar_limites_administrativos(self, usuario, esperado):
+        casos = [
+            ("personas", self.datos_persona()),
+            ("empresas", {"nombre": "Empresa no autorizada", "telefono": 555}),
+            ("jornadas", {"nombre": "Feria no autorizada", "direccion": "Centro",
+                          "fecha_inicio": "2026-09-21", "fecha_fin": "2026-09-23"}),
+            (f"jornadas/{self.jornada.id_jornada}/cajeros", {"personas": [self.users[0].id_per]}),
+            (f"jornadas/{self.jornada.id_jornada}/empresas/{self.empresas[0].id_empresa}/productos",
+             {"productos": [self.productos[0].id_prod]}),
+            ("roles", {"nombre": "ROL_PRUEBA", "descripcion": "Prueba"}),
+        ]
+        for ruta, datos in casos:
+            with self.subTest(ruta=ruta):
+                r = self.api("POST", ruta, datos, usuario=usuario)
+                self.assertEqual(r.status_code, esperado, f"POST {ruta} devolvió {r.status_code}")
+
+    def test_revocar_rol_administrador_invalida_el_permiso_del_token_existente(self):
+        admin = self.users[0]
+        asignacion = RolPersona.query.filter_by(persona_id_per=admin.id_per, rol_id_rol=self.roles[0].id_rol).one()
+        asignacion.estado = False
+        db.session.commit()
+        nombre = self.jornada.nombre
+        respuesta = self.api("PUT", f"jornadas/{self.jornada.id_jornada}", {
+            "nombre": "Cambio no autorizado", "direccion": "Plaza",
+            "fecha_inicio": "2026-09-21", "fecha_fin": "2026-09-22",
+        })
+        self.assertEqual(respuesta.status_code, 403)
+        db.session.expire_all()
+        self.assertEqual(self.jornada.nombre, nombre)
+
+    def test_acceso_a_perfil_propio_y_catalogos_compartidos(self):
+        for usuario in (1, 2):
+            with self.subTest(usuario=usuario):
+                propio = self.api("GET", f"personas/{self.users[usuario].id_per}", usuario=usuario)
+                self.assertEqual(propio.status_code, 200)
+                ajeno = self.api("GET", f"personas/{self.users[0].id_per}", usuario=usuario)
+                self.assertEqual(ajeno.status_code, 403)
+                self.assertEqual(self.api("GET", "metodos-pago?estado=true", usuario=usuario).status_code, 200)
+
+    def test_retiros_administrativos_no_modifican_datos_sin_permiso(self):
+        for usuario, estado in ((None, 401), (1, 403)):
+            with self.subTest(usuario=usuario):
+                for ruta in (
+                    f"personas/{self.users[0].id_per}", f"empresas/{self.empresas[0].id_empresa}",
+                    f"jornadas/{self.jornada.id_jornada}/cajeros/{self.users[2].id_per}",
+                    f"jornadas/{self.jornada.id_jornada}/productos/{self.productos[0].id_prod}",
+                    f"roles/{self.roles[0].id_rol}", f"metodos-pago/{self.pago.id_metodos}",
+                ):
+                    with self.subTest(ruta=ruta):
+                        self.assertEqual(self.api("DELETE", ruta, usuario=usuario).status_code, estado)
+        db.session.expire_all()
+        for registro in (self.users[0], self.empresas[0], self.jc, self.jp[0], self.roles[0], self.pago):
+            self.assertTrue(registro.estado)
+
+    def test_administracion_exige_sesion(self):
+        self.comprobar_limites_administrativos(usuario=None, esperado=401)
+
+    def test_administracion_exige_rol_administrador(self):
+        self.comprobar_limites_administrativos(usuario=1, esperado=403)
+
+class ReglasUnitariasTest(unittest.TestCase):
+    def test_cantidades_de_venta_deben_ser_enteros_positivos(self):
+        from app.services.venta_service import VentaError, VentaService
+        self.assertEqual(VentaService.entero("2", "Cantidad"), 2)
+        for valor in (0, -1, True, 1.5, "1.5", 2147483648):
+            with self.subTest(valor=valor), self.assertRaises(VentaError):
+                VentaService.entero(valor, "Cantidad")
+
+    def test_importes_de_producto_son_decimales_finitos(self):
+        from app.services.producto_service import ProductoService
+        self.assertEqual(ProductoService._convertir_decimal("10.35", "Precio"), Decimal("10.35"))
+        for valor in ("NaN", "Infinity", "texto"):
+            with self.subTest(valor=valor), self.assertRaises(ValueError):
+                ProductoService._convertir_decimal(valor, "Precio")
 
 
 if __name__ == "__main__":
